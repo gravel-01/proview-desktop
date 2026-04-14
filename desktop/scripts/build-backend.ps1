@@ -18,7 +18,6 @@ foreach ($dir in @($distDir, $workDir, $specDir)) {
 }
 
 $allowedEnvKeys = @(
-    'LOCAL_USER_NAME',
     'ANY_MODEL_ENDPOINT',
     'DEEPSEEK_BASE_URL',
     'ERNIE_BASE_URL',
@@ -31,7 +30,6 @@ $allowedEnvKeys = @(
 )
 
 $defaultEnvValues = [ordered]@{
-    LOCAL_USER_NAME = '本地用户'
     DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
     ERNIE_BASE_URL = 'https://aistudio.baidu.com/llm/lmapi/v3'
 }
