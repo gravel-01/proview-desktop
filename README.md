@@ -1,3 +1,7 @@
+# 写在前面
+打包好的单机桌面版ProView Desktop-测试版已经上线啦！快来下载预览版按照要求配置密钥开启你的AI面试助手吧！
+- https://github.com/gravel-01/proview-desktop/releases/tag/v0.1.0-alpha.1
+  
 # ProView AI Interviewer / ProView Desktop
 
 这是一个本地优先的 AI 求职训练工作台。仓库包含同一套业务前端、同一套 Python 后端，以及一个将它们封装为桌面应用的 Electron 外壳。
