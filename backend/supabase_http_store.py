@@ -1,18 +1,21 @@
 import json
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import requests
+
 from services.local_embedding import LocalEmbeddingService
 from services.ocr_result_utils import is_reusable_ocr_result
 from services.resume_preview_service import (
+    MAX_USER_RESUMES,
     cleanup_resume_assets,
     ensure_resume_previews,
 )
-from utils.http_fallback import request_with_curl_fallback
 
 
 def _normalize_text(value: object) -> str:
@@ -37,9 +40,6 @@ def _vector_literal(vector: Optional[List[float]]) -> Optional[str]:
 
 
 class SupabaseHTTPStore:
-    LOCAL_MODE_PROFILE_ID = "00000000-0000-0000-0000-000000000001"
-    LOCAL_MODE_USERNAME = "__proview_local__"
-
     def __init__(
         self,
         supabase_url: str,
@@ -64,10 +64,6 @@ class SupabaseHTTPStore:
             "Authorization": f"Bearer {self.service_key}",
             "Content-Type": "application/json",
         }
-        self.auth_headers = {
-            "apikey": self.public_key,
-            "Content-Type": "application/json",
-        }
         self._embedder = None
         if local_model_dir:
             embedder = LocalEmbeddingService(local_model_dir, local_max_length)
@@ -90,12 +86,12 @@ class SupabaseHTTPStore:
         if prefer:
             headers["Prefer"] = prefer
 
-        response = request_with_curl_fallback(
+        response = requests.request(
             method=method,
             url=f"{self.base_url}/rest/v1/{table}",
             headers=headers,
             params=params,
-            json_body=json_body,
+            json=json_body,
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -108,18 +104,25 @@ class SupabaseHTTPStore:
             return response.json()
         return response.text
 
+    @staticmethod
+    def _first_row_from_postgrest_json(data: object) -> Optional[Dict]:
+        if isinstance(data, list):
+            return data[0] if data else None
+        if isinstance(data, dict) and data:
+            return data
+        return None
+
     def _rpc_request(self, function_name: str, payload: Optional[Dict] = None):
-        response = request_with_curl_fallback(
-            "POST",
+        response = requests.post(
             url=f"{self.base_url}/rest/v1/rpc/{function_name}",
             headers=dict(self.headers),
-            json_body=payload or {},
+            json=payload or {},
             timeout=self.timeout,
         )
         if response.status_code == 404:
             raise RuntimeError(
                 f"Supabase RPC `{function_name}` not found. "
-                "Run docs/SUPABASE_RAG_HTTP_RPC.sql in the same Supabase project first."
+                "Run docs/database/SUPABASE_RAG_HTTP_RPC.sql in the same Supabase project first."
             )
         response.raise_for_status()
 
@@ -131,6 +134,23 @@ class SupabaseHTTPStore:
             return response.json()
         return []
 
+    @staticmethod
+    def _auth_http_error_message(exc: requests.HTTPError) -> str:
+        resp = exc.response
+        if resp is None:
+            return str(exc) or "HTTP error"
+        try:
+            data = resp.json()
+        except Exception:
+            text = (resp.text or "").strip()
+            return text[:300] if text else str(exc)
+        if isinstance(data, dict):
+            for key in ("error_description", "message", "msg", "error"):
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        return str(exc) or "HTTP error"
+
     def _auth_request(
         self,
         method: str,
@@ -140,15 +160,25 @@ class SupabaseHTTPStore:
         json_body: Optional[Dict] = None,
         params: Optional[Dict] = None,
     ):
-        headers = dict(self.auth_headers)
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
+        path_norm = path.lstrip("/")
+        # GoTrue Admin API expects the service role as both apikey and Authorization.
+        # Password grant and user JWT calls use the anon (public) apikey.
+        use_service_key = path_norm.startswith("admin/") or bearer_token == self.service_key
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if use_service_key:
+            headers["apikey"] = self.service_key
+            auth_bearer = bearer_token if bearer_token is not None else self.service_key
+            headers["Authorization"] = f"Bearer {auth_bearer}"
+        else:
+            headers["apikey"] = self.public_key
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
 
-        response = request_with_curl_fallback(
+        response = requests.request(
             method=method,
-            url=f"{self.base_url}/auth/v1/{path.lstrip('/')}",
+            url=f"{self.base_url}/auth/v1/{path_norm}",
             headers=headers,
-            json_body=json_body,
+            json=json_body,
             params=params,
             timeout=self.timeout,
         )
@@ -161,6 +191,12 @@ class SupabaseHTTPStore:
         if "application/json" in content_type:
             return response.json()
         return response.text
+
+    def _username_to_auth_email(self, username: str) -> str:
+        username = (username or "").strip().lower()
+        if "@" in username:
+            return username
+        return f"{username}@proview.local"
 
     def _user_to_dict(self, row: Dict) -> Dict:
         return {
@@ -259,11 +295,157 @@ class SupabaseHTTPStore:
         return rows[0] if rows else self._get_profile_by_id(user_id)
 
     def health(self) -> Dict:
+        """Lightweight REST probe; retries a few times on transient TLS / connection drops."""
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                self._request("GET", "profiles", params=[("select", "id"), ("limit", "1")])
+                return {"db_ok": True, "mode": "supabase_http", "db_url": self.masked_db_url}
+            except Exception as exc:
+                last_err = exc
+                if attempt < 2:
+                    time.sleep(0.35 * (attempt + 1))
+        return {
+            "db_ok": False,
+            "mode": "supabase_http",
+            "db_url": self.masked_db_url,
+            "db_error": str(last_err) if last_err else "unknown",
+        }
+
+    def register(self, username: str, password: str, display_name: str = "") -> Optional[Dict]:
+        username = (username or "").strip().lower()
+        password = password or ""
+        display_name = (display_name or "").strip()
+
+        if not username or not password:
+            return {"error": "用户名和密码不能为空", "status_code": 400}
+
         try:
-            self._request("GET", "profiles", params=[("select", "id"), ("limit", "1")])
-            return {"db_ok": True, "mode": "supabase_http", "db_url": self.masked_db_url}
+            if self._get_profile_by_username(username):
+                return {"error": "用户名已存在", "status_code": 409}
+
+            auth_user = self._auth_request(
+                "POST",
+                "admin/users",
+                bearer_token=self.service_key,
+                json_body={
+                    "email": self._username_to_auth_email(username),
+                    "password": password,
+                    "email_confirm": True,
+                    "user_metadata": {"username": username, "display_name": display_name or username},
+                },
+            )
+            if not isinstance(auth_user, dict):
+                return {
+                    "error": "注册失败：Auth 返回格式异常",
+                    "status_code": 502,
+                }
+            user_id = auth_user.get("id")
+            if not user_id:
+                return {
+                    "error": "注册失败：未获得用户 ID，请检查 Supabase Auth 与密钥配置",
+                    "status_code": 502,
+                }
+
+            profile = self._upsert_profile(user_id, username, display_name or username)
+            login_result = self.login(username, password)
+            if not login_result:
+                return {
+                    "error": "注册成功但无法完成登录，请稍后重试或尝试手动登录",
+                    "status_code": 502,
+                }
+            if login_result.get("error"):
+                return {
+                    "error": f"注册成功但登录失败：{login_result.get('error')}",
+                    "status_code": int(login_result.get("status_code") or 502),
+                }
+            if profile:
+                login_result["user"] = self._user_to_dict(profile)
+            return login_result
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 422:
+                return {"error": "用户名已存在", "status_code": 409}
+            detail = self._auth_http_error_message(exc)
+            print(f"[SupabaseHTTPStore] register failed: {exc} — {detail}")
+            code = exc.response.status_code if exc.response is not None else 502
+            return {"error": f"注册失败：{detail}", "status_code": code if 400 <= code < 600 else 502}
+        except requests.RequestException as exc:
+            print(f"[SupabaseHTTPStore] register network/transport error: {exc!r}")
+            tip = (str(exc).strip() or type(exc).__name__)[:200]
+            return {
+                "error": (
+                    "注册失败：无法访问 Supabase（"
+                    f"{tip}"
+                    "）。请核对 SUPABASE_URL（须为 https://xxx.supabase.co）、网络/代理/VPN，"
+                    "以及 SUPABASE_SERVICE_ROLE_KEY 是否为「service_role」密钥。"
+                ),
+                "status_code": 502,
+            }
         except Exception as exc:
-            return {"db_ok": False, "mode": "supabase_http", "db_url": self.masked_db_url, "db_error": str(exc)}
+            print(f"[SupabaseHTTPStore] register failed: {exc!r}")
+            tip = (str(exc).strip() or type(exc).__name__)[:200]
+            return {
+                "error": (
+                    "注册失败："
+                    f"{tip}"
+                    "。请查看后端日志中的完整堆栈；常见原因还包括 Auth 返回非 JSON、profiles 表缺失或 RLS 拒绝。"
+                ),
+                "status_code": 502,
+            }
+
+    def login(self, username: str, password: str) -> Optional[Dict]:
+        username = (username or "").strip().lower()
+        password = password or ""
+
+        try:
+            auth_result = self._auth_request(
+                "POST",
+                "token",
+                params={"grant_type": "password"},
+                json_body={"email": self._username_to_auth_email(username), "password": password},
+            )
+            token = auth_result.get("access_token")
+            auth_user = auth_result.get("user") or {}
+            if not token:
+                return {"error": "invalid credentials", "status_code": 401}
+
+            profile = self._get_profile_by_id(auth_user.get("id")) if auth_user.get("id") else None
+            if not profile and auth_user.get("id"):
+                profile = self._upsert_profile(
+                    auth_user["id"],
+                    username,
+                    (auth_user.get("user_metadata") or {}).get("display_name") or username,
+                )
+
+            user_dict = self._user_to_dict(profile) if profile else {
+                "id": auth_user.get("id"),
+                "username": username,
+                "display_name": (auth_user.get("user_metadata") or {}).get("display_name") or username,
+                "created_at": auth_user.get("created_at") or "",
+            }
+            return {"token": token, "user": user_dict}
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in (400, 401):
+                return {"error": "用户名或密码错误", "status_code": 401}
+            detail = self._auth_http_error_message(exc)
+            print(f"[SupabaseHTTPStore] login failed: {exc} — {detail}")
+            code = exc.response.status_code if exc.response is not None else 502
+            return {"error": f"登录失败：{detail}", "status_code": code if 400 <= code < 600 else 502}
+        except requests.RequestException as exc:
+            print(f"[SupabaseHTTPStore] login network/transport error: {exc!r}")
+            tip = (str(exc).strip() or type(exc).__name__)[:200]
+            return {
+                "error": (
+                    "登录失败：无法访问 Supabase（"
+                    f"{tip}"
+                    "）。请核对 SUPABASE_URL、网络与 SUPABASE_ANON_KEY / 密钥配置。"
+                ),
+                "status_code": 502,
+            }
+        except Exception as exc:
+            print(f"[SupabaseHTTPStore] login failed: {exc!r}")
+            tip = (str(exc).strip() or type(exc).__name__)[:200]
+            return {"error": f"登录失败：{tip}。请查看后端日志。", "status_code": 502}
 
     def get_user(self, jwt_token: str) -> Optional[Dict]:
         try:
@@ -282,40 +464,55 @@ class SupabaseHTTPStore:
             print(f"[SupabaseHTTPStore] get_user failed: {exc}")
             return None
 
-    def get_or_create_local_user(self, profile_name: str = "") -> Optional[Dict]:
-        alias = _normalize_text(profile_name) or "本地用户"
+    def get_nav_preferences(self, user_id: str) -> Dict:
         try:
-            profile = self._upsert_profile(
-                self.LOCAL_MODE_PROFILE_ID,
-                self.LOCAL_MODE_USERNAME,
-                alias,
-            )
-            self._claim_local_orphan_data(self.LOCAL_MODE_PROFILE_ID)
-            return self._user_to_dict(profile) if profile else None
+            rows = self._request(
+                "GET",
+                "user_nav_preferences",
+                params=[("select", "goal,stage,difficulty,career,updated_at"), ("user_id", f"eq.{user_id}"), ("limit", "1")],
+            ) or []
+            return rows[0] if rows else {}
         except Exception as exc:
-            print(f"[SupabaseHTTPStore] get_or_create_local_user failed: {exc}")
-            return None
+            print(f"[SupabaseHTTPStore] get_nav_preferences failed: {exc}")
+            return {}
 
-    def _claim_local_orphan_data(self, user_id: str) -> None:
+    def upsert_nav_preferences(self, user_id: str, goal: str, stage: str, difficulty: str, career: str) -> Dict:
+        """Upsert nav prefs. PostgREST may return 2xx with an empty body; in that case read back the row."""
+        headers = dict(self.headers)
+        headers["Prefer"] = "resolution=merge-duplicates,return=representation"
+        url = f"{self.base_url}/rest/v1/user_nav_preferences"
+        json_body = {
+            "user_id": user_id,
+            "goal": goal,
+            "stage": stage,
+            "difficulty": difficulty,
+            "career": career,
+            "updated_at": datetime.now().isoformat(),
+        }
+        response = requests.post(url, headers=headers, json=json_body, timeout=self.timeout)
         try:
-            self._request(
-                "PATCH",
-                "sessions",
-                params=[("user_id", "is.null")],
-                json_body={"user_id": user_id},
-            )
-        except Exception:
-            pass
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = ""
+            if exc.response is not None and exc.response.text:
+                detail = exc.response.text[:800]
+            raise RuntimeError(f"user_nav_preferences REST upsert failed: {exc} {detail}".strip()) from exc
 
-        try:
-            self._request(
-                "PATCH",
-                "resumes",
-                params=[("user_id", "is.null")],
-                json_body={"user_id": user_id},
-            )
-        except Exception:
-            pass
+        row = None
+        if response.text and "application/json" in response.headers.get("content-type", ""):
+            row = self._first_row_from_postgrest_json(response.json())
+        if row:
+            return row
+
+        stored = self.get_nav_preferences(user_id)
+        if stored:
+            return stored
+
+        raise RuntimeError(
+            "user_nav_preferences upsert returned no representation and GET returned empty. "
+            "Run docs/database/SUPABASE_USER_NAV_PREFERENCES.sql in your Supabase project, "
+            "and ensure public.profiles contains this user_id (FK)."
+        )
 
     def create_session(
         self,
@@ -368,10 +565,8 @@ class SupabaseHTTPStore:
             print(f"[SupabaseHTTPStore] get_session_info failed: {exc}")
             return None
 
-    def list_sessions(self, limit: Optional[int] = 50, user_id: Optional[str] = None) -> List[Dict]:
-        params: List[tuple[str, str]] = [("select", "*"), ("order", "start_time.desc")]
-        if limit is not None and limit > 0:
-            params.append(("limit", str(limit)))
+    def list_sessions(self, limit: int = 50, user_id: Optional[str] = None) -> List[Dict]:
+        params: List[tuple[str, str]] = [("select", "*"), ("order", "start_time.desc"), ("limit", str(limit))]
         if user_id is not None:
             params.append(("user_id", f"eq.{user_id}"))
 
@@ -526,6 +721,8 @@ class SupabaseHTTPStore:
                 },
             )
             ensure_resume_previews(file_path, file_name)
+            if user_id is not None:
+                self.enforce_resume_limit(user_id, MAX_USER_RESUMES)
             return True
         except Exception as exc:
             print(f"[SupabaseHTTPStore] save_resume failed: {exc}")
@@ -596,6 +793,31 @@ class SupabaseHTTPStore:
         except Exception as exc:
             print(f"[SupabaseHTTPStore] delete_resume failed: {exc}")
             return False
+
+    def enforce_resume_limit(self, user_id: str, keep: int) -> int:
+        removed_count = 0
+        try:
+            rows = self._request(
+                "GET",
+                "resumes",
+                params=[("select", "*"), ("user_id", f"eq.{user_id}"), ("order", "upload_time.desc"), ("order", "id.desc")],
+            ) or []
+            stale_rows = rows[max(0, keep):]
+            for row in stale_rows:
+                resume_id = row.get("id")
+                if resume_id is None:
+                    continue
+                self._request(
+                    "DELETE",
+                    "resumes",
+                    params=[("id", f"eq.{resume_id}"), ("user_id", f"eq.{user_id}")],
+                )
+                cleanup_resume_assets(row.get("file_path") or "")
+                removed_count += 1
+            return removed_count
+        except Exception as exc:
+            print(f"[SupabaseHTTPStore] enforce_resume_limit failed: {exc}")
+            return removed_count
 
     def search_questions(
         self,

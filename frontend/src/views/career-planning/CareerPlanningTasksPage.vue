@@ -48,20 +48,22 @@ function handleSelectTask(taskId: number) {
 <template>
   <section class="space-y-5">
     <!-- 页面标题区 -->
-    <div class="relative overflow-hidden rounded-3xl border border-indigo-200/40 bg-gradient-to-br from-indigo-600 via-purple-600 to-cyan-500 p-6 shadow-xl shadow-indigo-500/20">
-      <div class="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10"></div>
-      <div class="absolute -bottom-5 -right-5 h-24 w-24 rounded-full bg-white/5"></div>
+    <div
+      class="ui-card relative overflow-hidden rounded-3xl border border-gray-200/60 bg-[linear-gradient(135deg,rgba(224,242,254,0.5)_0%,rgba(219,234,254,0.6)_50%,rgba(255,255,255,0.8)_100%)] p-6 shadow-[0_8px_24px_rgba(59,130,246,0.06)] dark:border-white/10 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.9)_0%,rgba(30,41,59,0.86)_48%,rgba(15,23,42,0.92)_100%)]"
+    >
+      <div class="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/40 dark:bg-white/10"></div>
+      <div class="absolute -bottom-5 -right-5 h-24 w-24 rounded-full bg-white/30 dark:bg-white/5"></div>
       <div class="relative flex items-center justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-widest text-white/70">✅ 任务追踪</p>
-          <h1 class="mt-2 text-3xl font-black tracking-tight text-white">把每个里程碑拆成可执行任务并持续推进</h1>
-          <p class="mt-2 max-w-xl text-sm text-white/80">聚焦当下正在做的事情，支持单个任务标记完成、推进进度和记录阶段性备注。</p>
+          <p class="text-xs font-semibold uppercase tracking-widest text-blue-800/80 dark:text-blue-200/80">任务追踪</p>
+          <h1 class="mt-2 text-3xl font-black tracking-tight text-blue-900 dark:text-blue-100">把每个里程碑拆成可执行任务并持续推进</h1>
+          <p class="mt-2 max-w-xl text-sm text-blue-800/80 dark:text-slate-300">聚焦当下正在做的事情，支持单个任务标记完成、推进进度和记录阶段性备注。</p>
         </div>
         <div class="hidden lg:flex items-center gap-3">
           <div class="flex -space-x-2">
-            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm">📋</div>
-            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm">🎯</div>
-            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm">🚀</div>
+            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm dark:bg-white/10">📋</div>
+            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm dark:bg-white/10">🎯</div>
+            <div class="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-lg backdrop-blur-sm dark:bg-white/10">🚀</div>
           </div>
         </div>
       </div>
@@ -69,9 +71,9 @@ function handleSelectTask(taskId: number) {
 
     <!-- 统计概览卡片 -->
     <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <div class="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 to-white p-4 shadow-sm dark:border-white/10 dark:from-[#0C0F17] dark:to-[#0C0F17]/80">
+      <div class="ui-card-soft rounded-2xl border border-gray-200/60 bg-white/90 p-4 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70">
         <div class="flex items-center gap-2">
-          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100 to-blue-100 text-blue-800">
             📋
           </div>
           <div>
@@ -81,37 +83,37 @@ function handleSelectTask(taskId: number) {
         </div>
       </div>
 
-      <div class="rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 to-white p-4 shadow-sm dark:border-emerald-500/20 dark:from-emerald-500/10 dark:to-[#0C0F17]">
+      <div class="ui-card-soft rounded-2xl border border-gray-200/60 bg-white/90 p-4 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70">
         <div class="flex items-center gap-2">
-          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100 to-blue-100 text-blue-800">
             ✓
           </div>
           <div>
-            <p class="text-2xl font-black text-emerald-700 dark:text-emerald-100">{{ stats.completed }}</p>
+            <p class="text-2xl font-black text-blue-900 dark:text-blue-200">{{ stats.completed }}</p>
             <p class="text-xs text-slate-500 dark:text-slate-400">已完成</p>
           </div>
         </div>
       </div>
 
-      <div class="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50 to-white p-4 shadow-sm dark:border-amber-500/20 dark:from-amber-500/10 dark:to-[#0C0F17]">
+      <div class="ui-card-soft rounded-2xl border border-gray-200/60 bg-white/90 p-4 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70">
         <div class="flex items-center gap-2">
-          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100 to-blue-100 text-blue-800">
             ⏳
           </div>
           <div>
-            <p class="text-2xl font-black text-amber-700 dark:text-amber-100">{{ stats.inProgress }}</p>
+            <p class="text-2xl font-black text-blue-900 dark:text-blue-200">{{ stats.inProgress }}</p>
             <p class="text-xs text-slate-500 dark:text-slate-400">进行中</p>
           </div>
         </div>
       </div>
 
-      <div class="rounded-2xl border border-violet-200/80 bg-gradient-to-br from-violet-50 to-white p-4 shadow-sm dark:border-violet-500/20 dark:from-violet-500/10 dark:to-[#0C0F17]">
+      <div class="ui-card-soft rounded-2xl border border-gray-200/60 bg-white/90 p-4 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70">
         <div class="flex items-center gap-2">
-          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100 to-blue-100 text-blue-800">
             📊
           </div>
           <div>
-            <p class="text-2xl font-black text-violet-700 dark:text-violet-100">{{ stats.avgProgress }}%</p>
+            <p class="text-2xl font-black text-blue-900 dark:text-blue-200">{{ stats.avgProgress }}%</p>
             <p class="text-xs text-slate-500 dark:text-slate-400">平均进度</p>
           </div>
         </div>
@@ -119,14 +121,14 @@ function handleSelectTask(taskId: number) {
     </div>
 
     <!-- 进度条概览 -->
-    <div class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur-sm dark:border-white/10 dark:bg-[#0C0F17]/80">
+    <div class="ui-card-soft rounded-2xl p-4">
       <div class="flex items-center justify-between mb-2">
         <p class="text-sm font-semibold text-slate-700 dark:text-white">整体完成进度</p>
-        <p class="text-sm font-bold text-emerald-600 dark:text-emerald-400">{{ stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0 }}%</p>
+        <p class="text-sm font-bold text-blue-700 dark:text-blue-300">{{ stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0 }}%</p>
       </div>
       <div class="h-3 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
         <div 
-          class="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all duration-500"
+          class="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-500 transition-all duration-500"
           :style="{ width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` }"
         ></div>
       </div>

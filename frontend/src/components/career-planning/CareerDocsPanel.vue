@@ -97,6 +97,95 @@ const activeDocument = computed(() =>
   props.documents.find(doc => doc.id === activeDocId.value) || null
 )
 
+type DocTheme = {
+  cardBg: string
+  cardBgActive: string
+  border: string
+  borderActive: string
+  accent: string
+  accentSoftBg: string
+  title: string
+  subtitle: string
+  tagBg: string
+  tagBorder: string
+  tagText: string
+  bullet: string
+}
+
+const docThemes: DocTheme[] = [
+  {
+    cardBg: 'linear-gradient(135deg, rgba(224,242,254,0.55) 0%, rgba(255,255,255,0.92) 60%, rgba(219,234,254,0.35) 100%)',
+    cardBgActive: 'linear-gradient(135deg, rgba(224,242,254,0.75) 0%, rgba(255,255,255,0.95) 55%, rgba(219,234,254,0.55) 100%)',
+    border: 'rgba(191,219,254,0.55)',
+    borderActive: 'rgba(147,197,253,0.9)',
+    accent: '#2563eb',
+    accentSoftBg: 'rgba(224,242,254,0.55)',
+    title: '#1e3a8a',
+    subtitle: 'rgba(30,64,175,0.75)',
+    tagBg: 'rgba(255,255,255,0.72)',
+    tagBorder: 'rgba(191,219,254,0.9)',
+    tagText: '#1e40af',
+    bullet: '#3b82f6',
+  },
+  {
+    cardBg: 'linear-gradient(135deg, rgba(219,234,254,0.55) 0%, rgba(255,255,255,0.92) 60%, rgba(224,242,254,0.35) 100%)',
+    cardBgActive: 'linear-gradient(135deg, rgba(219,234,254,0.78) 0%, rgba(255,255,255,0.95) 55%, rgba(224,242,254,0.55) 100%)',
+    border: 'rgba(191,219,254,0.55)',
+    borderActive: 'rgba(147,197,253,0.9)',
+    accent: '#1d4ed8',
+    accentSoftBg: 'rgba(219,234,254,0.5)',
+    title: '#1e3a8a',
+    subtitle: 'rgba(30,58,138,0.72)',
+    tagBg: 'rgba(255,255,255,0.72)',
+    tagBorder: 'rgba(191,219,254,0.9)',
+    tagText: '#1e3a8a',
+    bullet: '#2563eb',
+  },
+  {
+    cardBg: 'linear-gradient(135deg, rgba(248,250,252,0.95) 0%, rgba(255,255,255,0.92) 55%, rgba(224,242,254,0.28) 100%)',
+    cardBgActive: 'linear-gradient(135deg, rgba(248,250,252,0.98) 0%, rgba(255,255,255,0.95) 50%, rgba(224,242,254,0.45) 100%)',
+    border: 'rgba(226,232,240,0.9)',
+    borderActive: 'rgba(147,197,253,0.75)',
+    accent: '#0ea5e9',
+    accentSoftBg: 'rgba(224,242,254,0.45)',
+    title: '#0f172a',
+    subtitle: 'rgba(30,41,59,0.7)',
+    tagBg: 'rgba(255,255,255,0.75)',
+    tagBorder: 'rgba(226,232,240,0.95)',
+    tagText: '#1e40af',
+    bullet: '#0ea5e9',
+  },
+  {
+    cardBg: 'linear-gradient(135deg, rgba(239,246,255,0.95) 0%, rgba(255,255,255,0.92) 58%, rgba(248,250,252,0.6) 100%)',
+    cardBgActive: 'linear-gradient(135deg, rgba(239,246,255,0.98) 0%, rgba(255,255,255,0.95) 52%, rgba(248,250,252,0.75) 100%)',
+    border: 'rgba(203,213,225,0.75)',
+    borderActive: 'rgba(147,197,253,0.75)',
+    accent: '#3b82f6',
+    accentSoftBg: 'rgba(239,246,255,0.7)',
+    title: '#1e3a8a',
+    subtitle: 'rgba(30,64,175,0.72)',
+    tagBg: 'rgba(255,255,255,0.75)',
+    tagBorder: 'rgba(203,213,225,0.85)',
+    tagText: '#1e40af',
+    bullet: '#3b82f6',
+  },
+]
+
+function themeIndexForId(id: string) {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return h % docThemes.length
+}
+
+function themeForDoc(doc: CareerPlanningDocument) {
+  return docThemes[themeIndexForId(doc.id)]
+}
+
+const activeTheme = computed<DocTheme>(() => {
+  if (!activeDocument.value) return docThemes[0]
+  return themeForDoc(activeDocument.value)
+})
+
 // 推荐文档（基于标签相似度）
 const recommendedDocs = computed(() => {
   if (!activeDocument.value) return []
@@ -162,12 +251,12 @@ function copyToClipboard(text: string) {
 // 获取难度颜色
 function getDifficultyColor(difficulty: string) {
   const colors: Record<string, string> = {
-    '入门': 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300',
-    '进阶': 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300',
-    '中级': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-300',
-    '高级': 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+    '入门': 'ui-badge-info',
+    '进阶': 'ui-badge-info',
+    '中级': 'ui-badge-subtle',
+    '高级': 'ui-badge-subtle'
   }
-  return colors[difficulty] || colors['入门']
+  return `ui-badge ${colors[difficulty] || colors['入门']}`
 }
 
 // 获取分类图标
@@ -185,7 +274,7 @@ function getCategoryIcon(icon: string) {
 </script>
 
 <template>
-  <section class="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-sm dark:border-white/10 dark:bg-[#0C0F17]/90">
+  <section class="ui-card rounded-3xl p-6">
     <!-- 顶部标题区 -->
     <div class="mb-6 flex items-start justify-between gap-4">
       <div>
@@ -195,7 +284,7 @@ function getCategoryIcon(icon: string) {
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <span class="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+        <span class="ui-badge ui-badge-info px-3 py-1 text-xs">
           {{ filteredDocuments.length }} 篇精选内容
         </span>
       </div>
@@ -208,19 +297,29 @@ function getCategoryIcon(icon: string) {
         :key="doc.id"
         @click="activeDocId = doc.id"
         class="group cursor-pointer rounded-2xl border-2 p-4 transition-all duration-200"
-        :class="activeDocument?.id === doc.id 
-          ? 'border-indigo-400 bg-indigo-50 shadow-lg shadow-indigo-100/50 dark:border-indigo-500/50 dark:bg-indigo-500/10 dark:shadow-none' 
-          : 'border-slate-200 bg-white hover:border-indigo-300 hover:shadow-md dark:border-white/10 dark:bg-[#0B1220] dark:hover:border-indigo-500/30'"
+        :style="{
+          background: activeDocument?.id === doc.id ? themeForDoc(doc).cardBgActive : themeForDoc(doc).cardBg,
+          borderColor: activeDocument?.id === doc.id ? themeForDoc(doc).borderActive : themeForDoc(doc).border,
+        }"
+        :class="activeDocument?.id === doc.id
+          ? 'shadow-[0_10px_26px_rgba(59,130,246,0.10)] dark:shadow-none'
+          : 'hover:shadow-md dark:bg-[#0B1220]'"
       >
         <div class="flex items-start gap-3">
-          <div 
+          <div
             class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-2xl shadow-sm"
-            :class="`bg-gradient-to-br ${doc.cover_gradient}`"
+            :style="{
+              background: themeForDoc(doc).accentSoftBg,
+              color: themeForDoc(doc).accent,
+            }"
           >
             {{ getCategoryIcon(doc.cover_icon) }}
           </div>
           <div class="min-w-0 flex-1">
-            <h3 class="font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+            <h3
+              class="font-bold dark:text-white"
+              :style="{ color: themeForDoc(doc).title }"
+            >
               {{ doc.title }}
             </h3>
             <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
@@ -234,35 +333,37 @@ function getCategoryIcon(icon: string) {
         </p>
         <!-- 标签信息 -->
         <div class="mt-3 flex flex-wrap items-center gap-2">
-          <span 
-            class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
-            :class="getDifficultyColor(doc.difficulty)"
-          >
+          <span :class="getDifficultyColor(doc.difficulty)">
             {{ doc.difficulty }}
           </span>
           <span class="flex items-center gap-1 text-[10px] text-slate-400">
             <span>⏱️</span>
             <span>{{ doc.read_time }}分钟</span>
           </span>
-          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">
+          <span class="ui-badge ui-badge-subtle">
             {{ doc.category }}
           </span>
         </div>
         <!-- 收藏按钮 -->
         <div class="mt-3 flex items-center justify-between">
           <div class="flex flex-wrap gap-1">
-            <span 
-              v-for="tag in doc.tags.slice(0, 3)" 
+            <span
+              v-for="tag in doc.tags.slice(0, 3)"
               :key="tag"
-              class="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-medium text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
+              class="ui-badge"
+              :style="{
+                background: themeForDoc(doc).tagBg,
+                borderColor: themeForDoc(doc).tagBorder,
+                color: themeForDoc(doc).tagText,
+              }"
             >
               {{ tag }}
             </span>
           </div>
           <button
             @click.stop="toggleFavorite(doc.id)"
-            class="shrink-0 rounded-full p-1.5 transition hover:bg-rose-100 dark:hover:bg-rose-500/20"
-            :class="favoriteIds.has(doc.id) ? 'text-rose-500' : 'text-slate-300 hover:text-rose-500'"
+            class="shrink-0 rounded-full p-1.5 transition hover:bg-sky-50 dark:hover:bg-blue-500/20"
+            :class="favoriteIds.has(doc.id) ? 'text-blue-500' : 'text-slate-300 hover:text-blue-500'"
           >
             {{ favoriteIds.has(doc.id) ? '❤️' : '🤍' }}
           </button>
@@ -278,7 +379,7 @@ function getCategoryIcon(icon: string) {
           v-model="searchQuery"
           type="text"
           placeholder="搜索文档..."
-          class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 pl-10 text-sm text-slate-900 placeholder-slate-400 transition focus:border-indigo-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder-slate-500"
+          class="ui-input pl-10 px-4 py-2.5 text-sm placeholder-slate-400 dark:placeholder-slate-500"
         />
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
       </div>
@@ -290,9 +391,9 @@ function getCategoryIcon(icon: string) {
           :key="cat"
           @click="selectedCategory = cat"
           class="rounded-full px-4 py-1.5 text-xs font-semibold transition"
-          :class="selectedCategory === cat 
-            ? 'bg-indigo-500 text-white' 
-            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300'"
+          :class="selectedCategory === cat
+            ? 'ui-btn-primary text-white' 
+            : 'bg-white text-slate-600 border border-gray-200 hover:bg-sky-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-blue-500/15'"
         >
           {{ cat }}
         </button>
@@ -302,9 +403,9 @@ function getCategoryIcon(icon: string) {
       <button
         @click="favoriteOnly = !favoriteOnly"
         class="flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition"
-        :class="favoriteOnly 
-          ? 'bg-rose-500 text-white' 
-          : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300'"
+        :class="favoriteOnly
+          ? 'bg-sky-50 text-blue-700 border border-blue-200 dark:border-blue-400/40 dark:bg-blue-500/15 dark:text-blue-200'
+          : 'bg-white text-slate-600 border border-gray-200 hover:bg-sky-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-blue-500/15'"
       >
         <span>❤️</span>
         <span>我的收藏</span>
@@ -313,16 +414,16 @@ function getCategoryIcon(icon: string) {
 
     <!-- 加载状态 -->
     <div v-if="loading" class="flex items-center justify-center py-12">
-      <div class="h-8 w-8 animate-spin rounded-full border-3 border-indigo-200 border-t-indigo-600"></div>
-      <span class="ml-3 text-sm text-slate-500">正在加载文档库...</span>
+      <div class="h-8 w-8 animate-spin rounded-full border-3 border-blue-200 border-t-blue-600"></div>
+      <span class="ml-3 text-sm text-slate-500 dark:text-slate-400">正在加载文档库...</span>
     </div>
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="rounded-xl border border-rose-200 bg-rose-50 p-5 text-center dark:border-rose-500/30 dark:bg-rose-500/10">
-      <p class="font-semibold text-rose-700 dark:text-rose-200">{{ error }}</p>
+    <div v-else-if="error" class="ui-card-soft rounded-xl border-blue-200 bg-sky-50 p-5 text-center dark:border-blue-500/30 dark:bg-blue-500/10">
+      <p class="font-semibold text-blue-700 dark:text-blue-200">{{ error }}</p>
       <button 
         @click="$emit('retry')"
-        class="mt-3 rounded-lg bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+        class="ui-btn ui-btn-primary mt-3 px-4 py-2 text-sm font-semibold"
       >
         重试
       </button>
@@ -331,35 +432,47 @@ function getCategoryIcon(icon: string) {
     <!-- 主内容区 - 文档详情展开区域 -->
     <div v-if="activeDocument" class="space-y-4">
       <!-- 文档详情卡片 -->
-      <div 
-        class="overflow-hidden rounded-2xl border-2 border-indigo-200/50 bg-white shadow-lg dark:border-indigo-500/30 dark:bg-[#0C0F17]"
+      <div
+        class="ui-card overflow-hidden rounded-2xl border-2 shadow-lg"
+        :style="{ borderColor: activeTheme.border }"
       >
         <!-- 详情头部 -->
         <div 
-          class="relative p-5 text-white"
-          :class="`bg-gradient-to-br ${activeDocument.cover_gradient}`"
+          class="relative p-5"
+          :style="{
+            color: activeTheme.title,
+            background: activeTheme.cardBgActive,
+          }"
         >
-          <div class="absolute -right-6 -top-6 h-28 w-28 rounded-full bg-white/10"></div>
+          <div class="absolute -right-6 -top-6 h-28 w-28 rounded-full bg-white/10 dark:bg-white/5"></div>
           <div class="relative">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <span class="rounded-full bg-white/20 px-3 py-1 text-xs font-bold">
+                <span
+                  class="ui-badge bg-white/70 dark:bg-white/10"
+                  :style="{
+                    borderColor: activeTheme.tagBorder,
+                    color: activeTheme.tagText,
+                  }"
+                >
                   {{ activeDocument.difficulty }}
                 </span>
-                <span class="flex items-center gap-1 text-xs text-white/80">
+                <span class="flex items-center gap-1 text-xs" :style="{ color: activeTheme.subtitle }">
                   ⏱️ {{ activeDocument.read_time }}分钟阅读
                 </span>
               </div>
               <div class="flex items-center gap-2">
                 <button
                   @click="toggleFavorite(activeDocument.id)"
-                  class="flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1.5 text-xs font-semibold backdrop-blur-sm transition hover:bg-white/30"
+                  class="ui-badge flex items-center gap-1.5 bg-white/70 px-3 py-1.5 text-xs font-semibold backdrop-blur-sm transition hover:bg-white dark:bg-white/10 dark:hover:bg-white/15"
+                  :style="{ borderColor: activeTheme.tagBorder, color: activeTheme.tagText }"
                 >
                   {{ favoriteIds.has(activeDocument.id) ? '❤️ 已收藏' : '🤍 收藏' }}
                 </button>
                 <button
                   @click="shareDocument(activeDocument)"
-                  class="flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1.5 text-xs font-semibold backdrop-blur-sm transition hover:bg-white/30"
+                  class="ui-badge flex items-center gap-1.5 bg-white/70 px-3 py-1.5 text-xs font-semibold backdrop-blur-sm transition hover:bg-white dark:bg-white/10 dark:hover:bg-white/15"
+                  :style="{ borderColor: activeTheme.tagBorder, color: activeTheme.tagText }"
                 >
                   📤 分享
                 </button>
@@ -367,14 +480,18 @@ function getCategoryIcon(icon: string) {
             </div>
             
             <h2 class="mt-3 text-xl font-black">{{ activeDocument.title }}</h2>
-            <p class="mt-1 text-sm text-white/80">{{ activeDocument.subtitle }}</p>
+            <p class="mt-1 text-sm" :style="{ color: activeTheme.subtitle }">{{ activeDocument.subtitle }}</p>
             
             <!-- 标签 -->
             <div class="mt-3 flex flex-wrap gap-2">
-              <span 
+              <span
                 v-for="tag in activeDocument.tags" 
                 :key="tag"
-                class="rounded-full bg-white/20 px-2 py-0.5 text-xs font-medium backdrop-blur-sm"
+                class="ui-badge bg-white/70 backdrop-blur-sm dark:bg-white/10"
+                :style="{
+                  borderColor: activeTheme.tagBorder,
+                  color: activeTheme.tagText,
+                }"
               >
                 {{ tag }}
               </span>
@@ -407,7 +524,7 @@ function getCategoryIcon(icon: string) {
                 :key="bIdx"
                 class="flex items-start gap-2.5 text-sm text-slate-600 dark:text-slate-300"
               >
-                <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500"></span>
+                <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" :style="{ background: activeTheme.bullet }"></span>
                 <span>{{ bullet }}</span>
               </li>
             </ul>
@@ -415,9 +532,10 @@ function getCategoryIcon(icon: string) {
             <!-- 行动项 -->
             <div 
               v-if="section.action_items?.length" 
-              class="mt-3 rounded-xl bg-indigo-50 p-3 dark:bg-indigo-500/10"
+              class="mt-3 rounded-xl p-3"
+              :style="{ background: activeTheme.accentSoftBg }"
             >
-              <h4 class="flex items-center gap-2 text-sm font-bold text-indigo-700 dark:text-indigo-300">
+              <h4 class="flex items-center gap-2 text-sm font-bold" :style="{ color: activeTheme.tagText }">
                 <span>🎯</span>
                 <span>立即行动</span>
               </h4>
@@ -425,9 +543,10 @@ function getCategoryIcon(icon: string) {
                 <li 
                   v-for="(item, iIdx) in section.action_items" 
                   :key="iIdx"
-                  class="flex items-start gap-2 text-sm text-indigo-600 dark:text-indigo-400"
+                  class="flex items-start gap-2 text-sm"
+                  :style="{ color: activeTheme.subtitle }"
                 >
-                  <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-400"></span>
+                  <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" :style="{ background: activeTheme.bullet }"></span>
                   <span>{{ item }}</span>
                 </li>
               </ul>
@@ -446,17 +565,20 @@ function getCategoryIcon(icon: string) {
               v-for="doc in recommendedDocs"
               :key="doc.id"
               @click="activeDocId = doc.id"
-              class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-indigo-300 hover:bg-indigo-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-indigo-500/30"
+              class="ui-card-soft flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-blue-300 hover:bg-sky-50/60 dark:border-white/10 dark:bg-white/5 dark:hover:border-blue-500/30"
             >
-              <div 
+              <div
                 class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-lg"
-                :class="`bg-gradient-to-br ${doc.cover_gradient}`"
+                :style="{
+                  background: themeForDoc(doc).accentSoftBg,
+                  color: themeForDoc(doc).accent,
+                }"
               >
                 {{ getCategoryIcon(doc.cover_icon) }}
               </div>
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-semibold text-slate-900 dark:text-white">{{ doc.title }}</p>
-                <p class="text-xs text-slate-500">{{ doc.difficulty }} · {{ doc.read_time }}分钟</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">{{ doc.difficulty }} · {{ doc.read_time }}分钟</p>
               </div>
               <span class="text-slate-400">→</span>
             </div>
