@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RefreshCcw, Rocket, Sparkles, TrendingUp } from 'lucide-vue-next'
+import { Clock, FileText, RefreshCcw, Rocket, Sparkles, Star, TrendingUp } from 'lucide-vue-next'
 import type { CareerDashboardStats, CareerProfile } from '../../types/career-planning'
 import { useCareerPlanningStore } from '../../stores/careerPlanning'
 
@@ -42,6 +42,71 @@ const gapTags = computed(() => {
     return tags ? JSON.parse(tags) : []
   } catch {
     return []
+  }
+})
+
+const interestTags = computed(() => {
+  try {
+    const raw = profileData.value?.interest_tags
+    if (!raw || typeof raw !== 'string') return [] as string[]
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return typeof profileData.value?.interest_tags === 'string'
+      ? [profileData.value.interest_tags]
+      : []
+  }
+})
+
+const numericScore = computed(() => {
+  const n = Number(profileData.value?.overall_score ?? 0)
+  if (Number.isNaN(n)) return 0
+  return Math.min(10, Math.max(0, n))
+})
+
+const scoreDisplay = computed(() => numericScore.value.toFixed(1))
+
+const ringRadius = 52
+const ringCirc = computed(() => 2 * Math.PI * ringRadius)
+const ringDashOffset = computed(() => {
+  const pct = Math.min(1, numericScore.value / 10)
+  return ringCirc.value * (1 - pct)
+})
+
+const filledStars = computed(() => Math.round((numericScore.value / 10) * 5))
+
+const profileRows = computed(() => {
+  const p = profileData.value
+  const sessions = p?.sessions
+  return [
+    { label: '职位意向', value: p?.target_role?.trim() || '—', important: true },
+    { label: '当前阶段', value: p?.current_stage?.trim() || '—', important: false },
+    { label: '规划完成率', value: `${props.stats.progress_rate}%`, important: false, rainbow: true },
+    {
+      label: '兴趣方向',
+      value: interestTags.value.length ? interestTags.value.join('、') : '—',
+      important: false,
+    },
+    {
+      label: '来源摘要',
+      value: p?.source_summary?.trim() || '—',
+      important: false,
+    },
+    {
+      label: '关联训练',
+      value: typeof sessions === 'number' && sessions > 0 ? `已关联 ${sessions} 次面试/训练` : '暂无关联记录',
+      important: false,
+      isMeta: true,
+    },
+  ]
+})
+
+const barHeights = computed(() => {
+  const max = Math.max(1, store.stats.plan_count, store.stats.active_task_count, store.stats.completed_task_count)
+  return {
+    plans: Math.round((store.stats.plan_count / max) * 100),
+    active: Math.round((store.stats.active_task_count / max) * 100),
+    done: Math.round((store.stats.completed_task_count / max) * 100),
   }
 })
 
@@ -155,270 +220,400 @@ export default {
 </script>
 
 <template>
-  <section class="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_25px_80px_-35px_rgba(15,23,42,0.35)] backdrop-blur dark:border-white/10 dark:bg-[#0C0F17]/90">
-    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(79,70,229,0.18),_transparent_36%),radial-gradient(circle_at_bottom_left,_rgba(14,165,233,0.15),_transparent_30%)]"></div>
-    <div class="relative space-y-5">
-      <!-- 标题区 -->
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="space-y-2">
-          <div class="inline-flex items-center gap-2 rounded-full border border-indigo-200/80 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
-            <Sparkles class="h-4 w-4" />
-            职业生涯规划
-          </div>
-          <div class="space-y-3">
-            <h1 class="text-3xl font-black tracking-tight text-slate-900 dark:text-white sm:text-4xl">从简历和面试结果出发，生成可执行的职业路径。</h1>
-            <p class="max-w-3xl text-sm leading-7 text-slate-600 dark:text-slate-400">这个页面会把现有的简历、面试历史和评估结果合并成一个可跟踪的职业规划面板。你可以直接生成目标岗位路线、补齐技能差距、以及标记阶段任务进度。</p>
-          </div>
-        </div>
-        
-        <!-- 顶部统计与操作按钮 -->
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="grid grid-cols-3 gap-2">
-            <div class="rounded-xl border border-sky-200/80 bg-sky-50 px-3 py-2 text-center dark:border-sky-500/20 dark:bg-sky-500/10">
-              <p class="text-[10px] font-semibold uppercase text-sky-600 dark:text-sky-200">目标岗位</p>
-              <p class="mt-0.5 text-sm font-black text-sky-700 dark:text-sky-100 truncate max-w-[100px]">{{ profileData?.target_role || '未生成' }}</p>
+  <section class="coh-root space-y-6">
+    <!-- 有简历版训练 徽章 -->
+    <div
+      class="coh-badge-enter relative inline-flex overflow-hidden rounded-full border border-indigo-200/40 px-6 py-3 shadow-md will-change-transform"
+      style="
+        background: linear-gradient(
+          135deg,
+          rgba(224, 242, 254, 0.4) 0%,
+          rgba(243, 232, 255, 0.4) 50%,
+          rgba(254, 242, 242, 0.4) 100%
+        );
+      "
+    >
+      <span class="coh-badge-shine pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
+      <Sparkles class="coh-icon-float relative z-[1] mr-2 h-4 w-4 shrink-0 text-blue-500" />
+      <span class="relative z-[1] text-sm font-semibold text-blue-900 dark:text-sky-100">有简历版训练</span>
+    </div>
+
+    <div class="grid gap-6 lg:grid-cols-3 lg:items-start">
+      <!-- 主内容卡片 + 表格 -->
+      <div class="coh-main-card group relative lg:col-span-2">
+        <div
+          class="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-white via-sky-50/10 to-violet-50/10 opacity-90 dark:from-white/5 dark:via-sky-500/5 dark:to-violet-500/5"
+          aria-hidden="true"
+        />
+        <div
+          class="relative overflow-hidden rounded-2xl border border-gray-200/70 bg-white/85 px-5 py-6 shadow-[0_20px_50px_rgba(59,130,246,0.08)] backdrop-blur-xl transition-[transform,box-shadow] duration-300 will-change-transform dark:border-white/10 dark:bg-slate-900/75 dark:shadow-[0_24px_60px_rgba(0,0,0,0.35)] sm:px-6 sm:py-7 lg:hover:-translate-y-3 lg:hover:shadow-[0_30px_70px_rgba(139,92,246,0.12)]"
+          style="transform-style: preserve-3d"
+        >
+          <div class="coh-main-shine pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
+          <header class="relative z-[1] mb-5 flex flex-wrap items-start gap-3">
+            <div class="flex items-center gap-2">
+              <span
+                class="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 text-white shadow-md"
+              >
+                <FileText class="coh-icon-spin h-5 w-5" />
+              </span>
+              <Sparkles class="h-5 w-5 text-sky-500 dark:text-sky-300" />
             </div>
-            <div class="rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2 text-center dark:border-amber-500/20 dark:bg-amber-500/10">
-              <p class="text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-200">当前阶段</p>
-              <p class="mt-0.5 text-sm font-black text-amber-700 dark:text-amber-100 truncate max-w-[100px]">{{ profileData?.current_stage || '等待分析' }}</p>
+            <div class="min-w-0 flex-1">
+              <h2
+                class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 bg-clip-text text-lg font-bold text-transparent dark:from-white dark:via-slate-100 dark:to-slate-300"
+              >
+                从简历和面试结果提取你的职业画像
+              </h2>
+              <p class="mt-2 max-w-2xl text-sm leading-relaxed text-[#6b7280] dark:text-slate-400">
+                将简历、面试历史与评估合并为可跟踪面板；在此查看结构化摘要，并在下方快速调整目标与周期。
+              </p>
             </div>
-            <div class="rounded-xl border border-emerald-200/80 bg-emerald-50 px-3 py-2 text-center dark:border-emerald-500/20 dark:bg-emerald-500/10">
-              <p class="text-[10px] font-semibold uppercase text-emerald-600 dark:text-emerald-200">规划进度</p>
-              <p class="mt-0.5 text-sm font-black text-emerald-700 dark:text-emerald-100">{{ stats.progress_rate }}%</p>
+          </header>
+
+          <div
+            class="coh-table-wrap relative overflow-hidden rounded-xl border border-gray-200/50 bg-white/90 dark:border-white/10 dark:bg-slate-950/40"
+          >
+            <div
+              class="pointer-events-none absolute right-0 top-0 h-40 w-40 rounded-full bg-rose-200/[0.03] dark:bg-rose-500/10"
+              aria-hidden="true"
+            />
+            <div
+              class="pointer-events-none absolute bottom-0 left-0 h-36 w-36 rounded-full bg-cyan-200/[0.03] dark:bg-cyan-500/10"
+              aria-hidden="true"
+            />
+            <div class="relative overflow-x-auto">
+              <table class="coh-table min-w-full text-left text-sm">
+                <thead>
+                  <tr
+                    class="coh-row-head border-b-2 border-sky-200 bg-gradient-to-br from-sky-100/50 to-indigo-100/50 dark:border-sky-500/30 dark:from-sky-500/15 dark:to-indigo-500/15"
+                  >
+                    <th class="px-6 py-3.5 text-xs font-semibold uppercase tracking-wide text-[#1e3a8a] dark:text-sky-100">
+                      字段
+                    </th>
+                    <th class="px-6 py-3.5 text-xs font-semibold uppercase tracking-wide text-[#1e3a8a] dark:text-sky-100">
+                      内容
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, idx) in profileRows"
+                    :key="row.label"
+                    class="coh-table-row group/row border-b border-gray-100 transition-colors duration-200 dark:border-white/5"
+                    :style="{ animationDelay: `${idx * 0.05}s` }"
+                  >
+                    <td class="relative px-6 py-4 align-top text-[#4b5563] dark:text-slate-400">
+                      <span class="coh-row-accent" aria-hidden="true" />
+                      {{ row.label }}
+                    </td>
+                    <td
+                      class="px-6 py-4 align-top font-medium text-gray-900 dark:text-slate-100"
+                      :class="
+                        row.rainbow
+                          ? 'coh-rainbow-num text-lg font-bold tabular-nums'
+                          : row.important
+                            ? 'bg-gradient-to-r from-blue-700 to-indigo-700 bg-clip-text text-transparent dark:from-sky-300 dark:to-indigo-300'
+                            : ''
+                      "
+                    >
+                      <span v-if="row.isMeta" class="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-slate-400">
+                        <Clock class="h-3.5 w-3.5 shrink-0" />
+                        {{ row.value }}
+                      </span>
+                      <span v-else>{{ row.value }}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </div>
-          <div class="flex gap-2">
-            <button
-              @click="emit('refresh')"
-              class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-indigo-300 hover:text-indigo-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
-            >
-              <RefreshCcw class="h-3.5 w-3.5" />
-              刷新
-            </button>
-            <button
-              @click="emit('generate')"
-              :disabled="generating"
-              class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Rocket class="h-3.5 w-3.5" />
-              {{ generating ? '生成中...' : '重新生成规划' }}
-            </button>
+            <!-- 小屏：表格仍横向滚动；卡片式可后续增强 -->
           </div>
         </div>
       </div>
 
-      <!-- 主内容区：左侧表单 + 右侧能力分析 -->
-      <div class="grid gap-6 lg:grid-cols-[1fr_320px]">
-        <!-- 左侧：快速选择表单 -->
-        <div class="space-y-4 rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm dark:border-white/10 dark:bg-white/5">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p class="text-sm font-bold text-slate-900 dark:text-white">快速选择</p>
-              <p class="text-xs text-slate-500 dark:text-slate-400">点击卡片即可填入表单</p>
-            </div>
-            <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
-              单选卡片
-            </span>
-          </div>
+      <!-- 右侧评分卡 -->
+      <div class="coh-score-enter relative lg:sticky lg:top-4">
+        <div
+          class="relative overflow-hidden rounded-2xl border border-indigo-200/60 bg-white/85 p-6 shadow-2xl shadow-indigo-200/40 backdrop-blur-xl dark:border-indigo-500/25 dark:bg-slate-900/80 dark:shadow-black/40"
+        >
+          <div
+            class="pointer-events-none absolute inset-0 bg-gradient-to-br from-blue-50/30 via-violet-50/20 to-white dark:from-blue-500/10 dark:via-violet-500/10 dark:to-transparent"
+            aria-hidden="true"
+          />
+          <div class="relative flex flex-col items-center text-center">
+            <p class="mb-1 flex items-center justify-center gap-1.5 text-xs font-medium text-gray-500 dark:text-slate-400">
+              <TrendingUp class="h-3.5 w-3.5 bg-gradient-to-br from-blue-500 to-violet-600 bg-clip-text text-transparent" />
+              总分
+            </p>
 
-          <!-- 目标岗位 -->
-          <div class="space-y-2">
-            <div class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">目标岗位</div>
-            <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <button
-                v-for="(role, index) in targetRoleSuggestions"
-                :key="role"
-                type="button"
-                @click="setTargetRole(role)"
-                class="group relative overflow-hidden rounded-xl border px-3 py-2.5 text-left transition duration-200"
-                :class="[
-                  pickTone(targetRoleToneClasses, targetRoleSelectedToneClasses, index, isSelectedText(normalizedTargetRole, role)),
-                  isSelectedText(normalizedTargetRole, role) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
-                ]"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-xs font-semibold leading-5 truncate">{{ role }}</span>
-                  <span
-                    class="h-2 w-2 shrink-0 rounded-full transition"
-                    :class="isSelectedText(normalizedTargetRole, role) ? 'bg-sky-600 dark:bg-sky-300' : 'bg-slate-300 dark:bg-slate-600'"
-                  ></span>
-                </div>
-              </button>
+            <div class="relative mx-auto mt-1 h-44 w-44">
+              <svg class="absolute inset-0 -rotate-90 text-sky-200/40 dark:text-slate-700" viewBox="0 0 120 120" aria-hidden="true">
+                <defs>
+                  <linearGradient id="cohRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#0284c7" />
+                    <stop offset="50%" stop-color="#4f46e5" />
+                    <stop offset="100%" stop-color="#7c3aed" />
+                  </linearGradient>
+                </defs>
+                <circle cx="60" cy="60" :r="ringRadius" fill="none" stroke="currentColor" stroke-width="8" />
+                <circle
+                  cx="60"
+                  cy="60"
+                  :r="ringRadius"
+                  fill="none"
+                  stroke="url(#cohRingGrad)"
+                  stroke-width="8"
+                  stroke-linecap="round"
+                  :stroke-dasharray="ringCirc"
+                  :stroke-dashoffset="ringDashOffset"
+                  class="transition-[stroke-dashoffset] duration-1000 ease-out"
+                />
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center pt-1">
+                <span
+                  class="coh-score-num text-5xl font-extrabold tabular-nums sm:text-6xl"
+                  :class="
+                    numericScore > 0
+                      ? 'bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-transparent'
+                      : 'bg-gradient-to-br from-gray-400 via-gray-500 to-gray-400 bg-clip-text text-transparent'
+                  "
+                >
+                  {{ scoreDisplay }}
+                </span>
+                <span v-if="numericScore <= 0" class="coh-score-glow pointer-events-none absolute bottom-6 h-10 w-24 rounded-full bg-gradient-to-r from-sky-400/30 to-violet-400/30 blur-xl" aria-hidden="true" />
+              </div>
             </div>
-          </div>
 
-          <!-- 职业目标 -->
-          <div class="space-y-2">
-            <div class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">职业目标</div>
-            <div class="grid gap-2 sm:grid-cols-2">
-              <button
-                v-for="(goal, index) in careerGoalSuggestions"
-                :key="goal"
-                type="button"
-                @click="setCareerGoal(goal)"
-                class="rounded-xl border px-3 py-2.5 text-left transition duration-200"
-                :class="[
-                  pickTone(careerGoalToneClasses, careerGoalSelectedToneClasses, index, isSelectedText(normalizedCareerGoal, goal)),
-                  isSelectedText(normalizedCareerGoal, goal) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
-                ]"
-              >
-                <div class="flex items-start gap-2">
-                  <span
-                    class="mt-0.5 h-2 w-2 shrink-0 rounded-full transition"
-                    :class="isSelectedText(normalizedCareerGoal, goal) ? 'bg-amber-600 dark:bg-amber-300' : 'bg-slate-300 dark:bg-slate-600'"
-                  ></span>
-                  <span class="text-xs font-semibold leading-4">{{ goal }}</span>
-                </div>
-              </button>
+            <div v-if="numericScore <= 0" class="mt-2 max-w-[220px] text-xs leading-relaxed text-gray-500 dark:text-slate-400">
+              开始训练后将显示评分
             </div>
-          </div>
+            <div v-else class="coh-score-glow-active pointer-events-none absolute top-1/2 h-16 w-32 -translate-y-1/2 rounded-full bg-gradient-to-r from-blue-400/25 to-violet-400/25 blur-2xl" aria-hidden="true" />
 
-          <!-- 周期选择 -->
-          <div class="space-y-2">
-            <div class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">规划周期</div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                v-for="(month, index) in horizonSuggestions"
-                :key="month"
-                type="button"
-                @click="setHorizonMonths(month)"
-                class="inline-flex min-w-[4rem] items-center justify-center rounded-full border px-3 py-1.5 text-xs font-semibold transition"
-                :class="[
-                  pickTone(horizonToneClasses, horizonSelectedToneClasses, index, isSelectedNumber(horizonMonths, month)),
-                  isSelectedNumber(horizonMonths, month) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
-                ]"
-              >
-                {{ month }}个月
-              </button>
-            </div>
-          </div>
-
-          <!-- 输入框 -->
-          <div class="grid gap-3 sm:grid-cols-3">
-            <label class="space-y-1">
-              <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">目标岗位</span>
-              <input
-                :value="targetRole"
-                type="text"
-                placeholder="输入目标..."
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none transition focus:border-indigo-400 focus:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white"
-                @input="emitTargetRole"
+            <div class="mt-4 flex justify-center gap-1">
+              <Star
+                v-for="i in 5"
+                :key="i"
+                class="h-5 w-5"
+                :class="
+                  i <= filledStars
+                    ? 'coh-star fill-amber-400 text-amber-400 drop-shadow-sm dark:fill-amber-300 dark:text-amber-300'
+                    : 'text-gray-200 dark:text-slate-600'
+                "
+                :stroke-width="1.5"
               />
-            </label>
-            <label class="space-y-1">
-              <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">职业目标</span>
-              <input
-                :value="careerGoal"
-                type="text"
-                placeholder="输入目标..."
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none transition focus:border-indigo-400 focus:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white"
-                @input="emitCareerGoal"
-              />
-            </label>
-            <label class="space-y-1">
-              <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">周期（月）</span>
-              <input
-                :value="horizonMonths"
-                type="number"
-                min="3"
-                max="12"
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none transition focus:border-indigo-400 focus:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white"
-                @input="emitHorizonMonths"
-              />
-            </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 快速选择 + 表单（保留交互） -->
+    <div class="coh-form-enter grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div class="ui-card-soft space-y-4 rounded-2xl border border-gray-200/60 bg-white/70 p-4 backdrop-blur-md dark:border-white/10 dark:bg-slate-900/50">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p class="text-sm font-bold text-gray-900 dark:text-white">快速选择</p>
+            <p class="text-xs text-gray-500 dark:text-slate-400">点击卡片即可填入表单</p>
+          </div>
+          <span class="ui-badge ui-badge-subtle px-3 py-1 text-xs">单选卡片</span>
+        </div>
+
+        <div class="space-y-2">
+          <div class="text-xs font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-slate-400">目标岗位</div>
+          <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <button
+              v-for="(role, index) in targetRoleSuggestions"
+              :key="role"
+              type="button"
+              class="group relative overflow-hidden rounded-xl border px-3 py-2.5 text-left transition duration-200"
+              :class="[
+                pickTone(targetRoleToneClasses, targetRoleSelectedToneClasses, index, isSelectedText(normalizedTargetRole, role)),
+                isSelectedText(normalizedTargetRole, role) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
+              ]"
+              @click="setTargetRole(role)"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="truncate text-xs font-semibold leading-5">{{ role }}</span>
+                <span
+                  class="h-2 w-2 shrink-0 rounded-full transition"
+                  :class="isSelectedText(normalizedTargetRole, role) ? 'bg-sky-600 dark:bg-sky-300' : 'bg-gray-300 dark:bg-slate-600'"
+                />
+              </div>
+            </button>
           </div>
         </div>
 
-        <!-- 右侧：能力分析面板 -->
-        <div class="space-y-3">
-          <!-- 总体画像分数 -->
-          <div class="rounded-2xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50 to-white p-4 dark:border-indigo-500/20 dark:from-indigo-500/10 dark:to-[#0C0F17]">
-            <div class="flex items-center justify-between">
-              <div>
-                <p class="text-xs font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-200">总体画像分数</p>
-                <p class="mt-1 text-3xl font-black text-indigo-700 dark:text-indigo-100">{{ Number(profileData?.overall_score || 0).toFixed(1) }}</p>
+        <div class="space-y-2">
+          <div class="text-xs font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-slate-400">职业目标</div>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              v-for="(goal, index) in careerGoalSuggestions"
+              :key="goal"
+              type="button"
+              class="rounded-xl border px-3 py-2.5 text-left transition duration-200"
+              :class="[
+                pickTone(careerGoalToneClasses, careerGoalSelectedToneClasses, index, isSelectedText(normalizedCareerGoal, goal)),
+                isSelectedText(normalizedCareerGoal, goal) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
+              ]"
+              @click="setCareerGoal(goal)"
+            >
+              <div class="flex items-start gap-2">
+                <span
+                  class="mt-0.5 h-2 w-2 shrink-0 rounded-full transition"
+                  :class="isSelectedText(normalizedCareerGoal, goal) ? 'bg-amber-600 dark:bg-amber-300' : 'bg-gray-300 dark:bg-slate-600'"
+                />
+                <span class="text-xs font-semibold leading-4">{{ goal }}</span>
               </div>
-              <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-500 text-white shadow-lg">
-                <TrendingUp class="h-5 w-5" />
-              </div>
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <div class="text-xs font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-slate-400">规划周期</div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="(month, index) in horizonSuggestions"
+              :key="month"
+              type="button"
+              class="inline-flex min-w-[4rem] items-center justify-center rounded-full border px-3 py-1.5 text-xs font-semibold transition"
+              :class="[
+                pickTone(horizonToneClasses, horizonSelectedToneClasses, index, isSelectedNumber(horizonMonths, month)),
+                isSelectedNumber(horizonMonths, month) ? 'translate-y-[-1px]' : 'hover:translate-y-[-1px]',
+              ]"
+              @click="setHorizonMonths(month)"
+            >
+              {{ month }}个月
+            </button>
+          </div>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-3">
+          <label class="space-y-1">
+            <span class="text-xs font-semibold text-gray-600 dark:text-slate-300">目标岗位</span>
+            <input :value="targetRole" type="text" placeholder="输入目标..." class="ui-input px-3 py-2 text-xs" @input="emitTargetRole" />
+          </label>
+          <label class="space-y-1">
+            <span class="text-xs font-semibold text-gray-600 dark:text-slate-300">职业目标</span>
+            <input :value="careerGoal" type="text" placeholder="输入目标..." class="ui-input px-3 py-2 text-xs" @input="emitCareerGoal" />
+          </label>
+          <label class="space-y-1">
+            <span class="text-xs font-semibold text-gray-600 dark:text-slate-300">周期（月）</span>
+            <input :value="horizonMonths" type="number" min="3" max="12" class="ui-input px-3 py-2 text-xs" @input="emitHorizonMonths" />
+          </label>
+        </div>
+      </div>
+
+      <!-- 底部数据项卡片列 -->
+      <div class="space-y-3">
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="ui-btn ui-btn-secondary px-3 py-2 text-xs font-semibold"
+            @click="emit('refresh')"
+          >
+            <RefreshCcw class="h-3.5 w-3.5" />
+            刷新
+          </button>
+          <button
+            type="button"
+            class="ui-btn ui-btn-primary px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            :disabled="generating"
+            @click="emit('generate')"
+          >
+            <Rocket class="h-3.5 w-3.5" />
+            {{ generating ? '生成中...' : '重新生成规划' }}
+          </button>
+        </div>
+
+        <div
+          class="coh-mini group relative overflow-hidden rounded-lg border border-gray-200/80 bg-white/70 p-4 transition-transform duration-200 will-change-transform hover:-translate-y-1 hover:scale-[1.02] dark:border-white/10 dark:bg-slate-900/50"
+        >
+          <div
+            class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            style="background: linear-gradient(135deg, rgba(224, 242, 254, 0.35), rgba(243, 232, 255, 0.25))"
+          />
+          <div class="relative flex items-center gap-2">
+            <span class="coh-icon-float inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-indigo-600 text-white shadow">
+              💪
+            </span>
+            <p class="text-xs font-bold text-gray-800 dark:text-white">优势能力</p>
+          </div>
+          <div class="relative mt-2 flex flex-wrap gap-1">
+            <span v-for="tag in strengthTags" :key="tag" class="ui-badge ui-badge-success">{{ tag }}</span>
+            <span v-if="!strengthTags.length" class="text-[10px] text-gray-400">暂无数据</span>
+          </div>
+        </div>
+
+        <div
+          class="coh-mini group relative overflow-hidden rounded-lg border border-gray-200/80 bg-white/70 p-4 transition-transform duration-200 will-change-transform hover:-translate-y-1 hover:scale-[1.02] dark:border-white/10 dark:bg-slate-900/50"
+        >
+          <div
+            class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            style="background: linear-gradient(135deg, rgba(254, 243, 199, 0.4), rgba(243, 232, 255, 0.25))"
+          />
+          <div class="relative flex items-center gap-2">
+            <span class="coh-icon-float inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-rose-500 text-white shadow">
+              🎯
+            </span>
+            <p class="text-xs font-bold text-gray-800 dark:text-white">待提升项</p>
+          </div>
+          <div class="relative mt-2 flex flex-wrap gap-1">
+            <span v-for="tag in gapTags" :key="tag" class="ui-badge ui-badge-warning">{{ tag }}</span>
+            <span v-if="!gapTags.length" class="text-[10px] text-gray-400">暂无数据</span>
+          </div>
+        </div>
+
+        <div
+          class="coh-mini group relative overflow-hidden rounded-lg border border-gray-200/80 bg-white/70 p-4 transition-transform duration-200 will-change-transform hover:-translate-y-1 hover:scale-[1.02] dark:border-white/10 dark:bg-slate-900/50"
+        >
+          <div
+            class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            style="background: linear-gradient(135deg, rgba(224, 242, 254, 0.3), rgba(204, 251, 241, 0.25))"
+          />
+          <div class="relative flex items-center gap-2">
+            <span class="coh-icon-float inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-500 text-white shadow">
+              📊
+            </span>
+            <p class="text-xs font-bold text-gray-800 dark:text-white">数据摘要</p>
+          </div>
+          <div class="relative mt-3 flex h-16 items-end justify-center gap-3 px-2">
+            <div class="flex flex-col items-center gap-1">
+              <div
+                class="coh-bar w-6 rounded-t-md bg-gradient-to-t from-sky-600 to-indigo-500 shadow-sm transition-[height] duration-500"
+                :style="{ height: `${Math.max(12, barHeights.plans)}%` }"
+              />
+              <span class="text-[10px] text-gray-500">计划</span>
             </div>
-            <div class="mt-3 flex gap-2">
-              <div class="flex-1 rounded-xl bg-white/80 p-2 text-center dark:bg-[#0B1220]">
-                <p class="text-[10px] text-slate-500">任务</p>
-                <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">{{ stats.active_task_count }}</p>
-              </div>
-              <div class="flex-1 rounded-xl bg-white/80 p-2 text-center dark:bg-[#0B1220]">
-                <p class="text-[10px] text-slate-500">计划</p>
-                <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">{{ stats.plan_count }}</p>
-              </div>
-              <div class="flex-1 rounded-xl bg-white/80 p-2 text-center dark:bg-[#0B1220]">
-                <p class="text-[10px] text-slate-500">完成率</p>
-                <p class="mt-0.5 text-sm font-bold text-emerald-600">{{ stats.progress_rate }}%</p>
-              </div>
+            <div class="flex flex-col items-center gap-1">
+              <div
+                class="coh-bar w-6 rounded-t-md bg-gradient-to-t from-violet-600 to-fuchsia-500 shadow-sm transition-[height] duration-500"
+                :style="{ height: `${Math.max(12, barHeights.active)}%` }"
+              />
+              <span class="text-[10px] text-gray-500">活跃</span>
+            </div>
+            <div class="flex flex-col items-center gap-1">
+              <div
+                class="coh-bar w-6 rounded-t-md bg-gradient-to-t from-emerald-600 to-teal-500 shadow-sm transition-[height] duration-500"
+                :style="{ height: `${Math.max(12, barHeights.done)}%` }"
+              />
+              <span class="text-[10px] text-gray-500">完成</span>
             </div>
           </div>
-
-          <!-- 优势能力 -->
-          <div class="rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/80 to-white p-3 dark:border-emerald-500/20 dark:from-emerald-500/10 dark:to-[#0C0F17]">
-            <div class="flex items-center gap-2 mb-2">
-              <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300">
-                💪
-              </div>
-              <p class="text-xs font-bold text-slate-700 dark:text-white">优势能力</p>
+          <div class="relative mt-2 space-y-1.5 text-[11px]">
+            <div class="flex justify-between">
+              <span class="text-gray-500">计划总数</span>
+              <span class="font-semibold text-gray-800 dark:text-slate-200">{{ store.stats.plan_count }} 个</span>
             </div>
-            <div class="flex flex-wrap gap-1">
-              <span 
-                v-for="tag in strengthTags" 
-                :key="tag"
-                class="rounded-full px-2 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
-              >
-                {{ tag }}
+            <div class="flex justify-between">
+              <span class="text-gray-500">已完成任务</span>
+              <span class="bg-gradient-to-r from-sky-600 to-emerald-600 bg-clip-text font-bold text-transparent">
+                {{ store.stats.completed_task_count }} 个
               </span>
-              <span v-if="!strengthTags.length" class="text-[10px] text-slate-400">暂无数据</span>
             </div>
-          </div>
-
-          <!-- 待提升项 -->
-          <div class="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/80 to-white p-3 dark:border-amber-500/20 dark:from-amber-500/10 dark:to-[#0C0F17]">
-            <div class="flex items-center gap-2 mb-2">
-              <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300">
-                🎯
-              </div>
-              <p class="text-xs font-bold text-slate-700 dark:text-white">待提升项</p>
-            </div>
-            <div class="flex flex-wrap gap-1">
-              <span 
-                v-for="tag in gapTags" 
-                :key="tag"
-                class="rounded-full px-2 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-              >
-                {{ tag }}
-              </span>
-              <span v-if="!gapTags.length" class="text-[10px] text-slate-400">暂无数据</span>
-            </div>
-          </div>
-
-          <!-- 数据摘要 -->
-          <div class="rounded-2xl border border-slate-200/80 bg-white/80 p-3 dark:border-white/10 dark:bg-white/5">
-            <div class="flex items-center gap-2 mb-2">
-              <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300">
-                📊
-              </div>
-              <p class="text-xs font-bold text-slate-700 dark:text-white">数据摘要</p>
-            </div>
-            <div class="space-y-1.5 text-[11px]">
-              <div class="flex justify-between">
-                <span class="text-slate-500">计划总数</span>
-                <span class="font-semibold text-slate-700 dark:text-slate-200">{{ store.stats.plan_count }} 个</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-slate-500">已完成任务</span>
-                <span class="font-semibold text-emerald-600">{{ store.stats.completed_task_count }} 个</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-slate-500">当前活跃</span>
-                <span class="font-semibold text-indigo-600">{{ store.stats.active_task_count }} 个</span>
-              </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">当前活跃</span>
+              <span class="font-semibold text-indigo-600 dark:text-indigo-300">{{ store.stats.active_task_count }} 个</span>
             </div>
           </div>
         </div>
@@ -426,3 +621,248 @@ export default {
     </div>
   </section>
 </template>
+
+<style scoped>
+@reference "tailwindcss";
+
+@media (prefers-reduced-motion: reduce) {
+  .coh-main-card,
+  .coh-score-enter,
+  .coh-form-enter,
+  .coh-badge-enter,
+  .coh-table-row,
+  .coh-icon-float,
+  .coh-icon-spin,
+  .coh-main-shine,
+  .coh-badge-shine,
+  .coh-score-glow-active,
+  .coh-star {
+    animation: none !important;
+  }
+  .coh-main-card .group:hover > div {
+    transform: none !important;
+  }
+}
+
+.coh-badge-enter {
+  animation: coh-fade-up 0.75s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  will-change: transform, opacity;
+}
+.coh-main-card > div:last-child {
+  animation: coh-card-enter 1s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  animation-delay: 0.1s;
+  will-change: transform, opacity;
+}
+@media (min-width: 1024px) {
+  .coh-main-card:hover > div:last-child {
+    transform: translate3d(0, -12px, 0) perspective(900px) rotateX(3deg) rotateY(-3deg) scale3d(1.01, 1.01, 1);
+  }
+}
+
+.coh-score-enter {
+  animation: coh-score-in 1s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  animation-delay: 0.4s;
+  will-change: transform, opacity;
+}
+.coh-form-enter {
+  animation: coh-fade-up 0.85s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  animation-delay: 0.2s;
+}
+
+@keyframes coh-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes coh-card-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 60px, 0) perspective(800px) rotateX(-15deg);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) perspective(800px) rotateX(0);
+  }
+}
+@keyframes coh-score-in {
+  from {
+    opacity: 0;
+    transform: translate3d(24px, 0, 0) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.coh-badge-shine {
+  background: linear-gradient(
+    105deg,
+    transparent,
+    rgba(255, 255, 255, 0.7),
+    transparent
+  );
+  animation: coh-shine-x 3s linear infinite;
+}
+.coh-main-shine {
+  background: linear-gradient(
+    105deg,
+    transparent,
+    rgba(255, 255, 255, 0.55),
+    transparent
+  );
+  animation: coh-shine-x 4.5s linear infinite;
+}
+@keyframes coh-shine-x {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.coh-icon-float {
+  animation: coh-float-y 2s ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes coh-float-y {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -2px, 0);
+  }
+}
+
+.coh-icon-spin {
+  animation: coh-spin-slow 22s linear infinite;
+  will-change: transform;
+}
+@keyframes coh-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.coh-table-row {
+  animation: coh-row-in 0.45s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  background: rgba(255, 255, 255, 0.45);
+}
+.dark .coh-table-row {
+  background: rgba(15, 23, 42, 0.25);
+}
+@keyframes coh-row-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.coh-row-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(180deg, #38bdf8, #6366f1, #a855f7);
+  opacity: 0;
+  transform: scaleY(0.6);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+.coh-table-row:hover {
+  background: linear-gradient(90deg, rgba(224, 242, 254, 0.3), rgba(243, 232, 255, 0.2)) !important;
+}
+.coh-table-row:hover .coh-row-accent {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.coh-score-num {
+  animation: coh-breathe 2s ease-in-out infinite;
+  will-change: opacity;
+}
+@keyframes coh-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+.coh-score-glow-active {
+  animation: coh-glow-pulse 3s ease-in-out infinite;
+  will-change: opacity;
+}
+@keyframes coh-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+
+.coh-star {
+  animation: coh-star-twinkle 2.4s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 0.12s);
+  will-change: opacity, transform;
+}
+.coh-star:nth-child(1) {
+  --i: 0;
+}
+.coh-star:nth-child(2) {
+  --i: 1;
+}
+.coh-star:nth-child(3) {
+  --i: 2;
+}
+.coh-star:nth-child(4) {
+  --i: 3;
+}
+.coh-star:nth-child(5) {
+  --i: 4;
+}
+@keyframes coh-star-twinkle {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.06);
+  }
+}
+
+.coh-rainbow-num {
+  background-image: linear-gradient(90deg, #0284c7, #4f46e5, #7c3aed);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: coh-breathe 2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.coh-bar {
+  min-height: 6px;
+  max-height: 52px;
+  will-change: height;
+}
+</style>

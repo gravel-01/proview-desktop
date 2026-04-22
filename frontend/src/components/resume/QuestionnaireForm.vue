@@ -1,674 +1,612 @@
-<script setup lang="ts">
-import { computed } from 'vue'
-import {
-  BriefcaseBusiness,
-  FilePlus2,
-  GraduationCap,
-  Lightbulb,
-  ListTodo,
-  Plus,
-  Sparkles,
-  Target,
-  Trash2,
-} from 'lucide-vue-next'
-import { useResumeQuestionnaireStore } from '../../stores/resumeQuestionnaire'
-import { hasMeaningfulQuestionnaireData } from '../../utils/prompt-serializer'
-
-const emit = defineEmits(['optimize-now'])
-
-const store = useResumeQuestionnaireStore()
-const defaultResumeStyle = '简洁专业（外企风格）'
-
-function parseTagInput(value: string, limit?: number) {
-  const items = Array.from(
-    new Set(
-      value
-        .split(/[,\n，、]/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  )
-  return typeof limit === 'number' ? items.slice(0, limit) : items
-}
-
-const targetIndustriesInput = computed({
-  get: () => store.formData.targetIndustries.join('，'),
-  set: (value: string) => {
-    store.formData.targetIndustries = parseTagInput(value)
-  },
-})
-
-const optimizationGoalsInput = computed({
-  get: () => store.formData.optimizationGoals.join('，'),
-  set: (value: string) => {
-    store.formData.optimizationGoals = parseTagInput(value, 3)
-  },
-})
-
-const optimizationStrategiesInput = computed({
-  get: () => store.formData.optimizationStrategies.join('，'),
-  set: (value: string) => {
-    store.formData.optimizationStrategies = parseTagInput(value)
-  },
-})
-
-const educationHighlightsInput = computed({
-  get: () => store.formData.education.highlights.join('，'),
-  set: (value: string) => {
-    store.formData.education.highlights = parseTagInput(value)
-  },
-})
-
-const hasQuestionnaireContent = computed(() => hasMeaningfulQuestionnaireData(store.formData))
-
-const filledSectionCount = computed(() => {
-  let count = 0
-  if (store.formData.targetRole.trim() || store.formData.targetIndustries.length || store.formData.targetCompanyType.trim() || store.formData.currentExperienceBase.trim()) count += 1
-  if (
-    store.formData.optimizationGoals.length
-    || (store.formData.hasJd && store.formData.jdContent?.trim())
-    || store.formData.resumeStyle !== defaultResumeStyle
-    || store.formData.optimizationStrategies.length
-  ) count += 1
-  if (store.formData.workExperiences.some((exp) => exp.companyName.trim() || exp.jobTitle.trim() || exp.outcomeImprovement?.trim() || exp.implicitOutcomes?.length)) count += 1
-  if (store.formData.skills.some((skill) => skill.name.trim()) || store.formData.education.school.trim() || store.formData.education.major.trim() || store.formData.education.highlights.length) count += 1
-  if (store.formData.additionalAdvantages.trim()) count += 1
-  return count
-})
-
-function addSkill() {
-  store.formData.skills.push({
-    name: '',
-    level: '熟悉',
-  })
-}
-
-function resetQuestionnaire() {
-  store.reset()
-}
-</script>
-
 <template>
-  <div class="questionnaire-panel">
-    <div class="questionnaire-head">
-      <div>
-        <p class="section-kicker">按需补充</p>
-        <h3 class="text-xl font-bold text-slate-900 dark:text-white">你的偏好会怎样影响优化</h3>
-        <p class="mt-2 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-          这里更适合补充“目标方向、成果表达、JD 要求、风格偏好”等信息。AI 会参考这些内容，但不会因为你没填就阻止优化。
-        </p>
-      </div>
-      <div class="head-badges">
-        <span class="status-chip" :class="hasQuestionnaireContent ? 'status-chip-active' : 'status-chip-idle'">
-          {{ hasQuestionnaireContent ? `已填写 ${filledSectionCount}/5 个模块` : '当前为空，不影响直接优化' }}
-        </span>
-        <button type="button" class="reset-btn" @click="resetQuestionnaire">清空问卷</button>
-      </div>
+  <div class="pv-qf">
+    <div class="pv-qf__bg" aria-hidden="true">
+      <div class="pv-qf__orb pv-qf__orb--a" />
+      <div class="pv-qf__orb pv-qf__orb--b" />
+      <div class="pv-qf__dots" />
     </div>
 
-    <div class="questionnaire-grid">
-      <section class="question-card">
-        <div class="card-head">
-          <div class="card-icon card-icon-blue">
-            <Target class="h-4 w-4" />
+    <div class="pv-qf__wrap">
+      <div class="pv-qf__card">
+        <!-- Progress bar -->
+        <div class="pv-qf__progress">
+          <div class="pv-qf__progressRow">
+            <span class="pv-qf__stepText">
+              Step <span class="pv-qf__stepStrong">{{ store.currentStep }}</span> / 7
+            </span>
           </div>
-          <div>
-            <h4 class="card-title">目标方向</h4>
-            <p class="card-desc">让优化结果更贴近你真正想投递的方向。</p>
-          </div>
-        </div>
-
-        <div class="field-grid">
-          <label class="field-block">
-            <span class="field-label">目标岗位</span>
-            <input v-model="store.formData.targetRole" type="text" class="field-input" placeholder="如：前端开发工程师 / 产品经理" />
-          </label>
-          <label class="field-block">
-            <span class="field-label">当前经验阶段</span>
-            <select v-model="store.formData.currentExperienceBase" class="field-input">
-              <option value="">未指定</option>
-              <option>应届生 / 在校</option>
-              <option>0-1年</option>
-              <option>1-3年</option>
-              <option>3-5年</option>
-              <option>5年以上</option>
-            </select>
-          </label>
-          <label class="field-block">
-            <span class="field-label">目标行业</span>
-            <input v-model="targetIndustriesInput" type="text" class="field-input" placeholder="如：互联网，AI，企业服务" />
-          </label>
-          <label class="field-block">
-            <span class="field-label">目标公司类型</span>
-            <select v-model="store.formData.targetCompanyType" class="field-input">
-              <option value="">未指定</option>
-              <option>大厂（如互联网头部公司）</option>
-              <option>中型公司</option>
-              <option>初创公司</option>
-              <option>外企</option>
-              <option>不确定</option>
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <section class="question-card">
-        <div class="card-head">
-          <div class="card-icon card-icon-indigo">
-            <Sparkles class="h-4 w-4" />
-          </div>
-          <div>
-            <h4 class="card-title">优化重点</h4>
-            <p class="card-desc">告诉 AI 这次更应该突出什么。</p>
+          <div class="pv-qf__bar" role="progressbar" :aria-valuenow="store.currentStep" aria-valuemin="1" aria-valuemax="7">
+            <div class="pv-qf__barFill" :style="{ width: `${(store.currentStep / 7) * 100}%` }" />
+            <div class="pv-qf__barGlow" :style="{ left: `${(store.currentStep / 7) * 100}%` }" aria-hidden="true" />
           </div>
         </div>
 
-        <div class="space-y-4">
-          <label class="field-block">
-            <span class="field-label">核心优化诉求</span>
-            <input
-              v-model="optimizationGoalsInput"
-              type="text"
-              class="field-input"
-              placeholder="最多 3 项，如：突出项目成果，提高通过率，强化关键词匹配"
-            />
-          </label>
-          <label class="field-block">
-            <span class="field-label">简历风格</span>
-            <select v-model="store.formData.resumeStyle" class="field-input">
-              <option value="简洁专业（外企风格）">简洁专业（外企风格）</option>
-              <option value="成果导向（互联网推荐）">成果导向（互联网推荐）</option>
-              <option value="技术深度（技术岗）">技术深度（技术岗）</option>
-              <option value="内容全面（传统行业）">内容全面（传统行业）</option>
-            </select>
-          </label>
-          <label class="field-block">
-            <span class="field-label">特殊策略</span>
-            <input
-              v-model="optimizationStrategiesInput"
-              type="text"
-              class="field-input"
-              placeholder="如：强调业务结果，弱化重复描述，英文表达更专业"
-            />
-          </label>
-        </div>
-      </section>
-
-      <section class="question-card card-wide">
-        <div class="card-head">
-          <div class="card-icon card-icon-amber">
-            <ListTodo class="h-4 w-4" />
-          </div>
-          <div>
-            <h4 class="card-title">JD 与工作经历补充</h4>
-            <p class="card-desc">如果你想让 AI 更准确地改写成果表达，这一块最有价值。</p>
-          </div>
-        </div>
-
-        <div class="space-y-4">
-          <div class="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-white/8 dark:bg-white/4">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p class="field-label">是否有明确岗位 JD</p>
-                <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">填写后会按 JD 要求优先做关键词和 ATS 匹配。</p>
-              </div>
-              <div class="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
-                <label class="inline-flex items-center gap-2">
-                  <input v-model="store.formData.hasJd" :value="true" type="radio" class="accent-primary" />
-                  有
-                </label>
-                <label class="inline-flex items-center gap-2">
-                  <input v-model="store.formData.hasJd" :value="false" type="radio" class="accent-primary" />
-                  没有
-                </label>
-              </div>
-            </div>
-            <textarea
-              v-if="store.formData.hasJd"
-              v-model="store.formData.jdContent"
-              rows="5"
-              class="field-input mt-4 min-h-[132px]"
-              placeholder="可直接粘贴岗位 JD，AI 会按职责、关键词和技能要求来优化简历。"
-            />
-          </div>
-
-          <div class="space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p class="field-label">经历补充</p>
-                <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">可以只补 1-2 段最关键经历，不需要把整份简历都重填。</p>
-              </div>
-              <button type="button" class="inline-action-btn" @click="store.addWorkExperience">
-                <Plus class="h-4 w-4" />
-                添加经历
-              </button>
-            </div>
-
-            <div v-if="!store.formData.workExperiences.length" class="empty-state">
-              暂未补充经历。你可以直接开始优化，或只添加最想强化的一两段经历。
-            </div>
-
-            <article
-              v-for="exp in store.formData.workExperiences"
-              :key="exp.id"
-              class="experience-card"
-            >
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p class="text-sm font-semibold text-slate-800 dark:text-white">经历补充</p>
-                  <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">补充真实信息，方便 AI 更准确地重写成果。</p>
+        <form class="pv-qf__form" @submit.prevent>
+          <!-- Step 1: Target Position -->
+          <Transition name="pv-qf-swap" mode="out-in">
+            <div v-if="store.currentStep === 1" key="s1" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 1：目标岗位（决定简历方向）</h2>
+              <div class="pv-qf__grid">
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">你想申请的岗位是？</label>
+                  <input v-model="store.formData.targetRole" type="text" class="pv-qf__input" placeholder="如：前端开发工程师" />
                 </div>
-                <button type="button" class="text-sm font-medium text-red-500 transition hover:text-red-600" @click="store.removeWorkExperience(exp.id)">
-                  <Trash2 class="mr-1 inline h-4 w-4" />
-                  删除
-                </button>
-              </div>
-
-              <div class="field-grid mt-4">
-                <label class="field-block">
-                  <span class="field-label">公司名称</span>
-                  <input v-model="exp.companyName" type="text" class="field-input" placeholder="公司 / 团队名称" />
-                </label>
-                <label class="field-block">
-                  <span class="field-label">职位名称</span>
-                  <input v-model="exp.jobTitle" type="text" class="field-input" placeholder="如：前端开发工程师" />
-                </label>
-                <label class="field-block">
-                  <span class="field-label">开始时间</span>
-                  <input v-model="exp.startDate" type="text" class="field-input" placeholder="YYYY.MM" />
-                </label>
-                <label class="field-block">
-                  <span class="field-label">结束时间</span>
-                  <input v-model="exp.endDate" type="text" class="field-input" placeholder="YYYY.MM / 至今" />
-                </label>
-              </div>
-
-              <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_auto]">
-                <label class="field-block">
-                  <span class="field-label">成果表达偏好</span>
-                  <select v-model="exp.hasSpecificOutcome" class="field-input">
-                    <option value="NOT_SURE">还没有明确想法</option>
-                    <option value="YES_DATA">有明确数据成果</option>
-                    <option value="YES_NO_DATA">有成果但没有量化数据</option>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">目标行业</label>
+                  <input type="text" class="pv-qf__input" placeholder="如：互联网, AI（逗号分隔）" @change="(e: any) => store.formData.targetIndustries = e.target.value.split(',')" />
+                </div>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">目标公司类型</label>
+                  <select v-model="store.formData.targetCompanyType" class="pv-qf__input">
+                    <option>大厂（如互联网头部公司）</option>
+                    <option>中型公司</option>
+                    <option>初创公司</option>
+                    <option>外企</option>
+                    <option>不确定</option>
                   </select>
-                </label>
-                <label class="field-block lg:w-40">
-                  <span class="field-label">管理人数</span>
-                  <input v-model.number="exp.managementCount" type="number" min="0" class="field-input" placeholder="可选" />
-                </label>
-              </div>
-
-              <textarea
-                v-if="exp.hasSpecificOutcome === 'YES_DATA'"
-                v-model="exp.outcomeImprovement"
-                rows="3"
-                class="field-input mt-4 min-h-[108px]"
-                placeholder="如：推动核心转化率提升 25%，主导搭建组件平台支撑 12 个业务团队。"
-              />
-
-              <div v-else-if="exp.hasSpecificOutcome === 'YES_NO_DATA'" class="mt-4 rounded-2xl border border-amber-200/80 bg-amber-50/70 p-4 dark:border-amber-400/15 dark:bg-amber-400/8">
-                <p class="field-label">这段经历更希望突出哪些影响</p>
-                <div class="mt-3 flex flex-wrap gap-3 text-sm text-slate-600 dark:text-slate-300">
-                  <label class="checkbox-pill"><input v-model="exp.implicitOutcomes" type="checkbox" value="提升了效率" class="accent-primary" /> 提升了效率</label>
-                  <label class="checkbox-pill"><input v-model="exp.implicitOutcomes" type="checkbox" value="减少了错误" class="accent-primary" /> 减少了错误</label>
-                  <label class="checkbox-pill"><input v-model="exp.implicitOutcomes" type="checkbox" value="优化了流程" class="accent-primary" /> 优化了流程</label>
-                  <label class="checkbox-pill"><input v-model="exp.implicitOutcomes" type="checkbox" value="协同更顺畅" class="accent-primary" /> 协同更顺畅</label>
+                </div>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">当前工作经验</label>
+                  <select v-model="store.formData.currentExperienceBase" class="pv-qf__input">
+                    <option>应届生 / 在校</option>
+                    <option>0-1年</option>
+                    <option>1-3年</option>
+                    <option>3-5年</option>
+                    <option>5年以上</option>
+                  </select>
                 </div>
               </div>
-            </article>
-          </div>
-        </div>
-      </section>
+            </div>
 
-      <section class="question-card">
-        <div class="card-head">
-          <div class="card-icon card-icon-emerald">
-            <BriefcaseBusiness class="h-4 w-4" />
-          </div>
-          <div>
-            <h4 class="card-title">技能与教育</h4>
-            <p class="card-desc">补充你希望被强调的关键词和教育亮点。</p>
-          </div>
-        </div>
+            <!-- Step 2: Optimization Goals -->
+            <div v-else-if="store.currentStep === 2" key="s2" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 2：本次优化目标（非常关键）</h2>
+              <div class="pv-qf__field">
+                <label class="pv-qf__label">你希望这次简历优化重点是？(最多选3项，逗号分隔)</label>
+                <input type="text" class="pv-qf__input" placeholder="如：提高简历通过率, 突出项目成果" @change="(e: any) => store.formData.optimizationGoals = e.target.value.split(',')" />
+              </div>
+              <div class="pv-qf__field">
+                <label class="pv-qf__label">是否有明确岗位 JD？</label>
+                <div class="pv-qf__choiceRow">
+                  <label class="pv-qf__choice"><input type="radio" v-model="store.formData.hasJd" :value="true" /> 有</label>
+                  <label class="pv-qf__choice"><input type="radio" v-model="store.formData.hasJd" :value="false" /> 没有</label>
+                </div>
+              </div>
+              <div v-if="store.formData.hasJd" class="pv-qf__field">
+                <label class="pv-qf__label">JD 内容</label>
+                <textarea v-model="store.formData.jdContent" rows="4" class="pv-qf__input pv-qf__textarea" />
+              </div>
+            </div>
 
-        <div class="space-y-4">
-          <div class="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-white/8 dark:bg-white/4">
-            <div class="mb-3 flex items-center justify-between gap-3">
-              <p class="field-label">技能清单</p>
-              <button type="button" class="inline-action-btn" @click="addSkill">
-                <Plus class="h-4 w-4" />
-                添加技能
+            <!-- Step 3: Work Experience -->
+            <div v-else-if="store.currentStep === 3" key="s3" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 3：工作经历（核心模块）</h2>
+
+              <div v-for="(exp) in store.formData.workExperiences" :key="exp.id" class="pv-qf__panel">
+                <button type="button" @click="store.removeWorkExperience(exp.id)" class="pv-qf__dangerBtn">删除此段</button>
+
+                <div class="pv-qf__grid pv-qf__grid--2">
+                  <div class="pv-qf__field">
+                    <label class="pv-qf__label">公司名称</label>
+                    <input v-model="exp.companyName" type="text" class="pv-qf__input" />
+                  </div>
+                  <div class="pv-qf__field">
+                    <label class="pv-qf__label">职位名称</label>
+                    <input v-model="exp.jobTitle" type="text" class="pv-qf__input" />
+                  </div>
+                  <div class="pv-qf__field">
+                    <label class="pv-qf__label">开始时间</label>
+                    <input v-model="exp.startDate" type="text" class="pv-qf__input" placeholder="YYYY.MM" />
+                  </div>
+                  <div class="pv-qf__field">
+                    <label class="pv-qf__label">结束时间</label>
+                    <input v-model="exp.endDate" type="text" class="pv-qf__input" placeholder="YYYY.MM" />
+                  </div>
+                  <div class="pv-qf__field">
+                    <label class="pv-qf__label">是否管理岗</label>
+                    <select v-model="exp.isManagement" class="pv-qf__input">
+                      <option :value="true">是</option>
+                      <option :value="false">否</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div v-if="exp.isManagement" class="pv-qf__field mt-4">
+                  <label class="pv-qf__label">管理人数</label>
+                  <input v-model.number="exp.managementCount" type="number" class="pv-qf__input" />
+                </div>
+
+                <div class="mt-4">
+                  <label class="pv-qf__label mb-2">是否有明确成果？</label>
+                  <div class="pv-qf__choiceRow pv-qf__choiceRow--wrap">
+                    <label class="pv-qf__choice"><input type="radio" v-model="exp.hasSpecificOutcome" value="YES_DATA" /> 有明确数据成果</label>
+                    <label class="pv-qf__choice"><input type="radio" v-model="exp.hasSpecificOutcome" value="YES_NO_DATA" /> 有成果但没有数据</label>
+                    <label class="pv-qf__choice"><input type="radio" v-model="exp.hasSpecificOutcome" value="NOT_SURE" /> 不确定</label>
+                  </div>
+
+                  <div v-if="exp.hasSpecificOutcome === 'YES_DATA'" class="pv-qf__subPanel">
+                    <label class="pv-qf__label">成果提升幅度</label>
+                    <input v-model="exp.outcomeImprovement" type="text" class="pv-qf__input" placeholder="如：转化率提升25%" />
+                  </div>
+                  <div v-else-if="exp.hasSpecificOutcome === 'YES_NO_DATA'" class="pv-qf__subPanel">
+                    <label class="pv-qf__label">你的工作带来的影响是？</label>
+                    <div class="pv-qf__checkList">
+                      <label class="pv-qf__choice"><input type="checkbox" v-model="exp.implicitOutcomes" value="提升了效率"> 提升了效率</label>
+                      <label class="pv-qf__choice"><input type="checkbox" v-model="exp.implicitOutcomes" value="减少了错误"> 减少了错误</label>
+                      <label class="pv-qf__choice"><input type="checkbox" v-model="exp.implicitOutcomes" value="优化了流程"> 优化了流程</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button type="button" @click="store.addWorkExperience" class="pv-qf__addBtn">
+                + 添加一段经历
               </button>
             </div>
-            <div v-if="!store.formData.skills.length" class="empty-state">
-              暂未补充技能关键词。
-            </div>
-            <div v-for="(skill, index) in store.formData.skills" :key="`${skill.name}-${index}`" class="grid gap-3 pt-3 first:pt-0 sm:grid-cols-[1fr_140px_auto]">
-              <input v-model="skill.name" type="text" class="field-input" placeholder="如：Vue 3 / Python / 增长分析" />
-              <select v-model="skill.level" class="field-input">
-                <option value="了解">了解</option>
-                <option value="熟悉">熟悉</option>
-                <option value="熟练">熟练</option>
-                <option value="精通">精通</option>
-              </select>
-              <button type="button" class="inline-action-btn inline-action-danger" @click="store.formData.skills.splice(index, 1)">
-                删除
-              </button>
-            </div>
-          </div>
 
-          <div class="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-white/8 dark:bg-white/4">
-            <div class="flex items-center gap-2">
-              <GraduationCap class="h-4 w-4 text-emerald-500" />
-              <p class="field-label">教育补充</p>
+            <!-- Step 4: Skills -->
+            <div v-else-if="store.currentStep === 4" key="s4" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 4：技能 (ATS优化核心)</h2>
+              <div class="pv-qf__panel">
+                <button type="button" @click="store.formData.skills.push({name: '', level: '了解'})" class="pv-qf__linkBtn">+ 添加技能</button>
+                <div v-for="(skill, idx) in store.formData.skills" :key="idx" class="pv-qf__row">
+                  <input v-model="skill.name" type="text" placeholder="技能名称" class="pv-qf__input pv-qf__input--grow" />
+                  <select v-model="skill.level" class="pv-qf__input">
+                    <option value="了解">了解</option>
+                    <option value="熟悉">熟悉</option>
+                    <option value="熟练">熟练</option>
+                    <option value="精通">精通</option>
+                  </select>
+                  <button type="button" @click="store.formData.skills.splice(idx, 1)" class="pv-qf__dangerBtnInline">删除</button>
+                </div>
+              </div>
             </div>
-            <div class="field-grid mt-4">
-              <label class="field-block">
-                <span class="field-label">学校</span>
-                <input v-model="store.formData.education.school" type="text" class="field-input" placeholder="学校名称" />
-              </label>
-              <label class="field-block">
-                <span class="field-label">学历</span>
-                <select v-model="store.formData.education.degree" class="field-input">
-                  <option value="专科">专科</option>
-                  <option value="本科">本科</option>
-                  <option value="硕士">硕士</option>
-                  <option value="博士">博士</option>
+
+            <!-- Step 5: Education -->
+            <div v-else-if="store.currentStep === 5" key="s5" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 5：教育背景</h2>
+              <div class="pv-qf__grid">
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">学校</label>
+                  <input v-model="store.formData.education.school" type="text" class="pv-qf__input" />
+                </div>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">学历</label>
+                  <select v-model="store.formData.education.degree" class="pv-qf__input">
+                    <option value="专科">专科</option>
+                    <option value="本科">本科</option>
+                    <option value="硕士">硕士</option>
+                    <option value="博士">博士</option>
+                  </select>
+                </div>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">专业</label>
+                  <input v-model="store.formData.education.major" type="text" class="pv-qf__input" />
+                </div>
+                <div class="pv-qf__field">
+                  <label class="pv-qf__label">是否有亮点 (逗号分隔)</label>
+                  <input type="text" class="pv-qf__input" placeholder="如：奖学金, 排名前10%" @change="(e: any) => store.formData.education.highlights = e.target.value.split(',')" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 6: Style & Strategy -->
+            <div v-else-if="store.currentStep === 6" key="s6" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 6：风格与优化策略（AI生成控制）</h2>
+              <div class="pv-qf__field">
+                <label class="pv-qf__label">你希望简历风格是？</label>
+                <select v-model="store.formData.resumeStyle" class="pv-qf__input">
+                  <option value="简洁专业（外企风格）">简洁专业（外企风格）</option>
+                  <option value="成果导向（互联网推荐）">成果导向（互联网推荐）</option>
+                  <option value="技术深度（技术岗）">技术深度（技术岗）</option>
+                  <option value="内容全面（传统行业）">内容全面（传统行业）</option>
                 </select>
-              </label>
-              <label class="field-block">
-                <span class="field-label">专业</span>
-                <input v-model="store.formData.education.major" type="text" class="field-input" placeholder="如：计算机科学与技术" />
-              </label>
-              <label class="field-block">
-                <span class="field-label">教育亮点</span>
-                <input v-model="educationHighlightsInput" type="text" class="field-input" placeholder="如：奖学金，排名前 10%，竞赛获奖" />
-              </label>
+              </div>
+              <div class="pv-qf__field">
+                <label class="pv-qf__label">是否需要以下优化？ (逗号分隔)</label>
+                <input type="text" class="pv-qf__input" placeholder="如：强化关键词匹配, 自动生成英文简历" @change="(e: any) => store.formData.optimizationStrategies = e.target.value.split(',')" />
+              </div>
             </div>
-          </div>
-        </div>
-      </section>
 
-      <section class="question-card">
-        <div class="card-head">
-          <div class="card-icon card-icon-rose">
-            <Lightbulb class="h-4 w-4" />
-          </div>
-          <div>
-            <h4 class="card-title">附加亮点</h4>
-            <p class="card-desc">给 AI 更多上下文，例如开源、证书、博客、副业或个人品牌。</p>
-          </div>
-        </div>
+            <!-- Step 7: Additional Info -->
+            <div v-else key="s7" class="pv-qf__step">
+              <h2 class="pv-qf__h2">Step 7：附加信息（可选但加分）</h2>
+              <div class="pv-qf__field">
+                <label class="pv-qf__label">你还有哪些补充优势？</label>
+                <textarea v-model="store.formData.additionalAdvantages" rows="4" placeholder="如：开源项目、技术博客、证书、副业经历..." class="pv-qf__input pv-qf__textarea" />
+              </div>
+            </div>
+          </Transition>
 
-        <textarea
-          v-model="store.formData.additionalAdvantages"
-          rows="8"
-          class="field-input min-h-[220px]"
-          placeholder="如：长期维护某开源项目；有技术博客；英语可直接面试；有跨团队项目 owner 经验。"
-        />
-      </section>
-    </div>
+          <!-- Bottom controls -->
+          <div class="pv-qf__footer">
+            <button type="button" @click="store.prevStep" :disabled="store.currentStep === 1" class="pv-qf__btn pv-qf__btn--prev">
+              上一步
+            </button>
 
-    <div class="questionnaire-footer">
-      <div class="flex min-w-0 items-center gap-3">
-        <div class="footer-icon">
-          <FilePlus2 class="h-4 w-4" />
-        </div>
-        <div class="min-w-0">
-          <p class="truncate text-sm font-semibold text-slate-800 dark:text-white">问卷不会替代原简历内容，只会影响优化偏好。</p>
-          <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">
-            你可以继续使用上方主按钮，也可以直接用下面这个快捷入口开始优化。
-          </p>
-        </div>
+            <button
+              type="button"
+              v-if="store.currentStep < 7"
+              @click="store.nextStep"
+              class="pv-qf__btn pv-qf__btn--next"
+            >
+              <span class="pv-qf__btnGlow" aria-hidden="true" />
+              下一步
+            </button>
+            <button
+              type="button"
+              v-else
+              @click="$emit('submit-questionnaire', store.formData)"
+              class="pv-qf__btn pv-qf__btn--next"
+            >
+              <span class="pv-qf__btnGlow" aria-hidden="true" />
+              提交问卷并优化
+            </button>
+          </div>
+        </form>
       </div>
-      <button type="button" class="footer-cta" @click="emit('optimize-now')">
-        <Sparkles class="h-4 w-4" />
-        用当前偏好开始优化
-      </button>
     </div>
   </div>
 </template>
 
+<script setup lang="ts">
+import { useResumeQuestionnaireStore } from '../../stores/resumeQuestionnaire';
+
+const store = useResumeQuestionnaireStore();
+if (store.formData.workExperiences.length === 0) store.addWorkExperience();
+
+defineEmits(['submit-questionnaire']);
+</script>
+
 <style scoped>
 @reference "tailwindcss";
 
-.questionnaire-panel {
-  @apply space-y-6 rounded-[28px] border p-5 sm:p-6;
+.pv-qf {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  padding: 28px 14px;
+  background: linear-gradient(to bottom right, rgba(240, 249, 255, 0.4), rgba(255, 255, 255, 1), rgba(239, 246, 255, 0.3));
+}
+
+.pv-qf__bg {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.pv-qf__orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(64px);
+}
+
+.pv-qf__orb--a {
+  left: -220px;
+  top: -220px;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(224, 242, 254, 0.22), transparent 65%);
+  animation: pv-qf-orb-a 30s ease-in-out infinite;
+}
+
+.pv-qf__orb--b {
+  right: -200px;
+  bottom: -220px;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(219, 234, 254, 0.18), transparent 65%);
+  animation: pv-qf-orb-b 28s ease-in-out infinite;
+}
+
+@keyframes pv-qf-orb-a {
+  0%,
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, 30px, 0) scale(1.1); }
+}
+
+@keyframes pv-qf-orb-b {
+  0%,
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -25px, 0) scale(1.15); }
+}
+
+.pv-qf__dots {
+  position: absolute;
+  inset: 0;
+  opacity: 0.005;
+  background-image: radial-gradient(circle, #111827 0.7px, transparent 0.7px);
+  background-size: 60px 60px;
+}
+
+.pv-qf__wrap {
+  position: relative;
+  z-index: 1;
+  margin: 0 auto;
+  max-width: 900px;
+  display: flex;
+  justify-content: center;
+}
+
+.pv-qf__card {
+  width: min(720px, 92vw);
+  border-radius: 24px;
+  border: 1px solid rgba(229, 231, 235, 0.6);
   background:
-    radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.98) 100%);
-  border-color: rgba(226, 232, 240, 0.9);
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.9) 0%,
+      rgba(224, 242, 254, 0.25) 30%,
+      rgba(219, 234, 254, 0.25) 70%,
+      rgba(255, 255, 255, 0.9) 100%
+    );
+  box-shadow:
+    0 18px 50px rgba(15, 23, 42, 0.08),
+    0 30px 70px rgba(59, 130, 246, 0.08),
+    0 0 100px rgba(147, 197, 253, 0.05);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  padding: 22px;
 }
 
-.dark .questionnaire-panel {
-  background:
-    radial-gradient(circle at top left, rgba(96, 165, 250, 0.1), transparent 28%),
-    linear-gradient(180deg, rgba(12, 16, 25, 0.98) 0%, rgba(7, 10, 18, 0.98) 100%);
-  border-color: rgba(255, 255, 255, 0.08);
+@media (min-width: 768px) {
+  .pv-qf__card { padding: 44px; }
 }
 
-.questionnaire-head {
-  @apply flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between;
+.pv-qf__progress {
+  margin-bottom: 22px;
 }
 
-.section-kicker {
-  @apply text-[11px] font-semibold uppercase tracking-[0.24em];
-  color: rgb(59, 130, 246);
+.pv-qf__progressRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
 }
 
-.head-badges {
-  @apply flex flex-wrap items-center gap-3;
+.pv-qf__stepText {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+}
+.pv-qf__stepStrong {
+  color: #2563eb;
+  font-weight: 800;
 }
 
-.status-chip {
-  @apply inline-flex items-center rounded-full px-3 py-1.5 text-xs font-semibold;
+.pv-qf__bar {
+  position: relative;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(243, 244, 246, 1);
+  overflow: hidden;
+}
+.pv-qf__barFill {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #38bdf8, #3b82f6);
+  transition: width 0.6s ease;
+}
+.pv-qf__barGlow {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate3d(-50%, -50%, 0);
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.35), transparent 60%);
+  animation: pv-qf-glow-breathe 2.6s ease-in-out infinite;
+}
+@keyframes pv-qf-glow-breathe {
+  0%,
+  100% { opacity: 0.45; transform: translate3d(-50%, -50%, 0) scale(0.9); }
+  50% { opacity: 0.85; transform: translate3d(-50%, -50%, 0) scale(1.1); }
 }
 
-.status-chip-active {
-  background: rgba(16, 185, 129, 0.14);
-  color: rgb(5, 150, 105);
+.pv-qf__h2 {
+  font-size: 20px;
+  line-height: 1.6;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 14px;
 }
 
-.status-chip-idle {
-  background: rgba(226, 232, 240, 0.9);
-  color: rgb(100, 116, 139);
+.pv-qf__form { display: flex; flex-direction: column; gap: 18px; }
+.pv-qf__step { min-height: 380px; }
+
+.pv-qf__grid { display: grid; gap: 14px; }
+.pv-qf__grid--2 { grid-template-columns: 1fr; }
+@media (min-width: 768px) {
+  .pv-qf__grid { grid-template-columns: 1fr 1fr; }
+  .pv-qf__grid--2 { grid-template-columns: 1fr 1fr; }
 }
 
-.dark .status-chip-active {
-  background: rgba(16, 185, 129, 0.18);
-  color: rgb(110, 231, 183);
+.pv-qf__field { display: flex; flex-direction: column; gap: 6px; }
+.pv-qf__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
 }
 
-.dark .status-chip-idle {
-  background: rgba(255, 255, 255, 0.06);
-  color: rgb(148, 163, 184);
+.pv-qf__input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(229, 231, 235, 1);
+  background: rgba(255, 255, 255, 0.7);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #111827;
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
-
-.reset-btn {
-  @apply inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors;
-  border-color: rgba(226, 232, 240, 0.95);
-  color: rgb(100, 116, 139);
-  background: rgba(255, 255, 255, 0.82);
+.pv-qf__input:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 1);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+  background: rgba(255, 255, 255, 0.85);
 }
+.pv-qf__input--grow { flex: 1; }
+.pv-qf__textarea { min-height: 120px; resize: vertical; }
 
-.reset-btn:hover {
-  border-color: rgba(79, 70, 229, 0.28);
-  color: rgb(79, 70, 229);
+.pv-qf__choiceRow {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 4px;
+  color: #374151;
+  font-size: 14px;
 }
+.pv-qf__choiceRow--wrap { flex-wrap: wrap; }
+.pv-qf__choice { display: inline-flex; align-items: center; gap: 8px; }
+.pv-qf__choice input { accent-color: #3b82f6; }
 
-.dark .reset-btn {
-  border-color: rgba(255, 255, 255, 0.08);
-  color: rgb(203, 213, 225);
-  background: rgba(255, 255, 255, 0.03);
+.pv-qf__panel {
+  position: relative;
+  border-radius: 16px;
+  border: 1px solid rgba(229, 231, 235, 0.85);
+  background: rgba(255, 255, 255, 0.6);
+  padding: 16px;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
 }
-
-.questionnaire-grid {
-  @apply grid gap-4 xl:grid-cols-2;
+.pv-qf__subPanel {
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(186, 230, 253, 1);
+  background: linear-gradient(135deg, rgba(224, 242, 254, 0.4), rgba(255, 255, 255, 0.7));
+  padding: 12px;
 }
+.pv-qf__checkList { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; color: #6b7280; }
 
-.question-card {
-  @apply rounded-[24px] border p-5;
-  background: rgba(255, 255, 255, 0.72);
-  border-color: rgba(226, 232, 240, 0.9);
+.pv-qf__dangerBtn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  transition: color 0.2s ease, transform 0.2s ease;
 }
-
-.dark .question-card {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
+.pv-qf__dangerBtn:hover { color: #111827; transform: translateY(-1px); }
+.pv-qf__dangerBtnInline {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  padding: 0 8px;
+  transition: color 0.2s ease;
 }
+.pv-qf__dangerBtnInline:hover { color: #111827; }
 
-.card-wide {
-  @apply xl:col-span-2;
+.pv-qf__addBtn {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 2px dashed rgba(209, 213, 219, 1);
+  background: rgba(255, 255, 255, 0.55);
+  color: #6b7280;
+  font-weight: 600;
+  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, background 0.2s ease;
 }
-
-.card-head {
-  @apply mb-5 flex items-start gap-3;
-}
-
-.card-icon {
-  @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white;
-}
-
-.card-icon-blue {
-  background: linear-gradient(135deg, #2563eb 0%, #38bdf8 100%);
-}
-
-.card-icon-indigo {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-}
-
-.card-icon-amber {
-  background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
-}
-
-.card-icon-emerald {
-  background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%);
-}
-
-.card-icon-rose {
-  background: linear-gradient(135deg, #f43f5e 0%, #fb7185 100%);
-}
-
-.card-title {
-  @apply text-base font-semibold text-slate-900 dark:text-white;
-}
-
-.card-desc {
-  @apply mt-1 text-sm text-slate-500 dark:text-slate-400;
-}
-
-.field-grid {
-  @apply grid gap-4 md:grid-cols-2;
-}
-
-.field-block {
-  @apply block;
-}
-
-.field-label {
-  @apply text-sm font-medium text-slate-700 dark:text-slate-200;
-}
-
-.field-input {
-  @apply mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none transition-colors;
-  border-color: rgba(203, 213, 225, 0.9);
-  background: rgba(255, 255, 255, 0.95);
-  color: rgb(15, 23, 42);
-}
-
-.field-input:focus {
-  border-color: rgba(79, 70, 229, 0.55);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
-}
-
-.dark .field-input {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(15, 23, 42, 0.78);
-  color: rgb(226, 232, 240);
-}
-
-.inline-action-btn {
-  @apply inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-colors;
-  border-color: rgba(79, 70, 229, 0.18);
-  color: rgb(79, 70, 229);
-  background: rgba(79, 70, 229, 0.08);
-}
-
-.inline-action-btn:hover {
-  background: rgba(79, 70, 229, 0.14);
-}
-
-.inline-action-danger {
-  border-color: rgba(248, 113, 113, 0.18);
-  color: rgb(220, 38, 38);
-  background: rgba(254, 226, 226, 0.8);
-}
-
-.dark .inline-action-danger {
-  border-color: rgba(248, 113, 113, 0.18);
-  background: rgba(127, 29, 29, 0.22);
-  color: rgb(252, 165, 165);
-}
-
-.empty-state {
-  @apply rounded-2xl border border-dashed px-4 py-6 text-center text-sm;
-  border-color: rgba(203, 213, 225, 0.9);
-  color: rgb(100, 116, 139);
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.dark .empty-state {
-  border-color: rgba(255, 255, 255, 0.08);
-  color: rgb(148, 163, 184);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.experience-card {
-  @apply rounded-[24px] border p-4;
-  border-color: rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.dark .experience-card {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.checkbox-pill {
-  @apply inline-flex items-center gap-2 rounded-full border px-3 py-2;
-  border-color: rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.dark .checkbox-pill {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.questionnaire-footer {
-  @apply flex flex-col gap-4 rounded-[24px] border p-4 lg:flex-row lg:items-center lg:justify-between;
-  border-color: rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.94);
-}
-
-.dark .questionnaire-footer {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.footer-icon {
-  @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white;
-  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
-}
-
-.footer-cta {
-  @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-semibold text-white transition-all;
-  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
-  box-shadow: 0 14px 30px rgba(79, 70, 229, 0.24);
-}
-
-.footer-cta:hover {
+.pv-qf__addBtn:hover {
+  border-color: rgba(59, 130, 246, 1);
+  color: #1d4ed8;
+  background: rgba(255, 255, 255, 0.75);
   transform: translateY(-1px);
-  box-shadow: 0 18px 34px rgba(79, 70, 229, 0.28);
+}
+
+.pv-qf__row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.pv-qf__linkBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #2563eb;
+  margin-bottom: 8px;
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.pv-qf__linkBtn:hover { color: #1d4ed8; transform: translateY(-1px); }
+
+.pv-qf__footer {
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(229, 231, 235, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pv-qf__btn {
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-size: 14px;
+  font-weight: 700;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+.pv-qf__btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.pv-qf__btn--prev {
+  background: #ffffff;
+  border: 1px solid rgba(229, 231, 235, 1);
+  color: #374151;
+}
+.pv-qf__btn--prev:not(:disabled):hover {
+  background: rgba(240, 249, 255, 1);
+  border-color: rgba(186, 230, 253, 1);
+  color: #1d4ed8;
+  transform: translateY(-2px);
+}
+.pv-qf__btn--next {
+  position: relative;
+  overflow: hidden;
+  color: #ffffff;
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.25);
+}
+.pv-qf__btn--next:not(:disabled):hover {
+  transform: translateY(-3px) scale(1.04);
+  box-shadow: 0 10px 30px rgba(59, 130, 246, 0.35);
+}
+.pv-qf__btnGlow {
+  position: absolute;
+  inset: -40%;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.25), transparent 55%);
+  opacity: 0.35;
+  animation: pv-qf-btn-breathe 3s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes pv-qf-btn-breathe {
+  0%,
+  100% { opacity: 0.3; transform: scale(0.95); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+
+.pv-qf-swap-enter-active,
+.pv-qf-swap-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.pv-qf-swap-enter-from { opacity: 0; transform: translate3d(30px, 0, 0); }
+.pv-qf-swap-leave-to { opacity: 0; transform: translate3d(-30px, 0, 0); }
+
+@media (max-width: 640px) {
+  .pv-qf__footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .pv-qf__btn { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pv-qf__orb--a,
+  .pv-qf__orb--b,
+  .pv-qf__barGlow,
+  .pv-qf__btnGlow {
+    animation: none !important;
+  }
 }
 </style>
+

@@ -1,0 +1,725 @@
+/* Auth login/register — GPU-friendly animations (transform + opacity) */
+
+/* ---- Floating orbs ---- */
+@keyframes auth-orb-tl {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+  }
+  33% {
+    transform: translate3d(40px, -50px, 0) scale(1.15) rotate(90deg);
+  }
+  66% {
+    transform: translate3d(-40px, 50px, 0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes auth-orb-tr {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.1) rotate(0deg);
+  }
+  33% {
+    transform: translate3d(-50px, -60px, 0) scale(1) rotate(-90deg);
+  }
+  66% {
+    transform: translate3d(50px, 60px, 0) scale(1.1) rotate(0deg);
+  }
+}
+
+@keyframes auth-orb-bl {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(35px, -45px, 0) scale(1.2) rotate(180deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1) rotate(360deg);
+  }
+}
+
+@keyframes auth-orb-cr {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1) rotate(-180deg);
+    opacity: 0.14;
+  }
+  50% {
+    transform: translate3d(0, 0, 0) scale(1.3) rotate(-360deg);
+    opacity: 0.22;
+  }
+}
+
+.auth-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.auth-orb--tl {
+  top: -180px;
+  left: -180px;
+  width: 700px;
+  height: 700px;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.11) 0%, transparent 72%);
+  animation: auth-orb-tl 30s ease-in-out infinite;
+}
+
+.auth-orb--tr {
+  top: -160px;
+  right: -140px;
+  width: 650px;
+  height: 650px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.1) 0%, transparent 72%);
+  animation: auth-orb-tr 25s ease-in-out infinite;
+}
+
+.auth-orb--bl {
+  bottom: -140px;
+  left: -120px;
+  width: 550px;
+  height: 550px;
+  background: radial-gradient(circle, rgba(244, 114, 182, 0.09) 0%, transparent 72%);
+  animation: auth-orb-bl 35s linear infinite;
+}
+
+.auth-orb--cr {
+  top: 38%;
+  right: 8%;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.1) 0%, transparent 70%);
+  animation: auth-orb-cr 28s ease-in-out infinite;
+}
+
+html.dark .auth-orb--tl {
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.08) 0%, transparent 72%);
+}
+html.dark .auth-orb--tr {
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.08) 0%, transparent 72%);
+}
+html.dark .auth-orb--bl {
+  background: radial-gradient(circle, rgba(244, 114, 182, 0.07) 0%, transparent 72%);
+}
+html.dark .auth-orb--cr {
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.08) 0%, transparent 70%);
+}
+
+/* ---- Gradient waves ---- */
+@keyframes auth-wave-lr {
+  0% {
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0%, 0, 0);
+  }
+}
+
+@keyframes auth-wave-rl {
+  0% {
+    transform: translate3d(0%, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.auth-wave-layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 38vh;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.09;
+  will-change: transform;
+}
+
+.auth-wave-layer--reverse {
+  opacity: 0.06;
+}
+
+.auth-wave-strip {
+  position: absolute;
+  inset: 0;
+  width: 200%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(251, 191, 36, 0.14) 25%,
+    rgba(253, 186, 116, 0.08) 50%,
+    transparent 70%
+  );
+  animation: auth-wave-lr 20s linear infinite;
+}
+
+.auth-wave-layer--reverse .auth-wave-strip {
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(125, 211, 252, 0.16) 30%,
+    rgba(186, 230, 253, 0.09) 55%,
+    transparent 75%
+  );
+  animation: auth-wave-rl 25s linear infinite;
+}
+
+/* ---- Particles ---- */
+@keyframes auth-particle {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(0.8);
+    opacity: 0.04;
+  }
+  40% {
+    transform: translate3d(var(--px, 40px), var(--py, -180px), 0) scale(1.2);
+    opacity: 0.2;
+  }
+  70% {
+    transform: translate3d(calc(var(--px, 40px) * -0.4), var(--py2, -220px), 0) scale(1);
+    opacity: 0.12;
+  }
+}
+
+.auth-particle {
+  position: fixed;
+  width: 1.5px;
+  height: 1.5px;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform, opacity;
+  animation: auth-particle var(--dur, 16s) ease-in-out infinite;
+  animation-delay: var(--delay, 0s);
+}
+
+/* ---- Patterns + radial veils ---- */
+.auth-pattern-dots {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.012) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+html.dark .auth-pattern-dots {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+}
+
+.auth-pattern-lines {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.45;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 79px,
+    rgba(148, 163, 184, 0.008) 79px,
+    rgba(148, 163, 184, 0.008) 80px
+  );
+}
+
+.auth-radial-veil {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 55% 45% at 92% 8%, rgba(244, 114, 182, 0.012), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 6% 92%, rgba(34, 211, 238, 0.012), transparent 50%),
+    radial-gradient(ellipse 60% 50% at 52% 48%, rgba(167, 139, 250, 0.008), transparent 60%);
+}
+
+/* ---- Card shell ---- */
+@keyframes auth-card-enter {
+  from {
+    opacity: 0;
+    transform: perspective(1000px) translate3d(0, 60px, 0) rotateX(-15deg) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(1000px) translate3d(0, 0, 0) rotateX(0deg) scale(1);
+  }
+}
+
+@keyframes auth-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes auth-inner-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.18;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.26;
+  }
+}
+
+.auth-card-wrap {
+  position: relative;
+  width: 100%;
+  max-width: min(480px, 92vw);
+  padding: 0 4px;
+  transform-style: preserve-3d;
+}
+
+@media (min-width: 640px) {
+  .auth-card-wrap {
+    max-width: min(460px, 90vw);
+  }
+}
+
+.auth-card-glow-ring {
+  position: absolute;
+  inset: -24px;
+  border-radius: 1.35rem;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+  background: conic-gradient(
+    from 0deg,
+    rgba(56, 189, 248, 0.22),
+    rgba(99, 102, 241, 0.2),
+    rgba(244, 114, 182, 0.22),
+    rgba(56, 189, 248, 0.22)
+  );
+  filter: blur(32px);
+  animation: auth-ring-spin 20s linear infinite;
+  will-change: transform;
+}
+
+.auth-card-wrap:hover .auth-card-glow-ring {
+  opacity: 0.32;
+}
+
+.auth-card-inner-glow {
+  position: absolute;
+  inset: -12px;
+  border-radius: 1.2rem;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.12), rgba(167, 139, 250, 0.1));
+  filter: blur(22px);
+  opacity: 0.22;
+  animation: auth-inner-glow 4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes auth-card-float-y {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -5px, 0);
+  }
+}
+
+.auth-card-enter-anim {
+  animation: auth-card-enter 1.2s cubic-bezier(0.215, 0.61, 0.355, 1) 0.3s both;
+  transform-style: preserve-3d;
+}
+
+.auth-card-float-layer {
+  animation: auth-card-float-y 4s ease-in-out 1.55s infinite;
+  will-change: transform;
+}
+
+.auth-card-tilt-layer {
+  transform-style: preserve-3d;
+  transition: transform 0.2s ease-out;
+}
+
+.auth-card-surface {
+  position: relative;
+  border-radius: 1rem;
+  padding: 2.25rem 1.75rem;
+  border: 1px solid rgba(209, 213, 219, 0.6);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(224, 242, 254, 0.28) 30%, rgba(243, 232, 255, 0.28) 70%, rgba(255, 255, 255, 0.9) 100%),
+    rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 20px 50px rgba(59, 130, 246, 0.04),
+    0 0 50px rgba(139, 92, 246, 0.03),
+    0 22px 44px -12px rgba(15, 23, 42, 0.08);
+}
+
+@media (min-width: 640px) {
+  .auth-card-surface {
+    padding: 2.5rem 2.25rem;
+  }
+}
+
+html.dark .auth-card-surface {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.92) 0%, rgba(30, 27, 75, 0.5) 50%, rgba(30, 41, 59, 0.92) 100%), rgba(15, 23, 42, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 20px 50px rgba(59, 130, 246, 0.06), 0 0 48px rgba(139, 92, 246, 0.05);
+}
+
+@keyframes auth-title-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.auth-subtitle-anim {
+  animation: auth-title-in 0.55s ease-out 0.2s both;
+}
+
+/* ---- Text fields ---- */
+@keyframes auth-shake {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  20% {
+    transform: translate3d(-4px, 0, 0);
+  }
+  40% {
+    transform: translate3d(4px, 0, 0);
+  }
+  60% {
+    transform: translate3d(-3px, 0, 0);
+  }
+  80% {
+    transform: translate3d(3px, 0, 0);
+  }
+}
+
+.auth-field--error .auth-field-control {
+  animation: auth-shake 0.45s ease-out;
+}
+
+@keyframes auth-icon-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -2px, 0);
+  }
+}
+
+.auth-field-icon {
+  animation: auth-icon-float 3.2s ease-in-out infinite;
+}
+
+.auth-field-icon--delay {
+  animation-delay: 0.6s;
+}
+
+/* ---- Submit button ---- */
+@keyframes auth-btn-pulse-outer {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.65;
+  }
+}
+
+@keyframes auth-btn-breath-inner {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes auth-btn-shine {
+  0% {
+    transform: translate3d(-150%, 0, 0);
+  }
+  100% {
+    transform: translate3d(150%, 0, 0);
+  }
+}
+
+@keyframes auth-corner-twinkle {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.85;
+  }
+}
+
+.auth-submit {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  overflow: hidden;
+  border: none;
+  border-radius: 0.75rem;
+  padding: 0.9rem 1.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #f0abfc 100%);
+  box-shadow: 0 8px 24px rgba(96, 165, 250, 0.25);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s ease, opacity 0.2s ease;
+  will-change: transform;
+}
+
+.auth-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.auth-submit__pulse {
+  position: absolute;
+  inset: -20%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.35) 0%, transparent 65%);
+  pointer-events: none;
+  animation: auth-btn-pulse-outer 3s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.auth-submit__breath {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), transparent 55%, rgba(255, 255, 255, 0.12));
+  pointer-events: none;
+  animation: auth-btn-breath-inner 2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.auth-submit__shine {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem;
+  background: linear-gradient(105deg, transparent 0%, rgba(255, 255, 255, 0.4) 45%, transparent 55%);
+  transform: translate3d(-150%, 0, 0);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.auth-submit:not(:disabled):hover {
+  transform: translate3d(0, -4px, 0) scale(1.03) rotateX(2deg);
+  box-shadow: 0 15px 40px rgba(139, 92, 246, 0.35);
+}
+
+.auth-submit:not(:disabled):hover .auth-submit__shine {
+  opacity: 1;
+  animation: auth-btn-shine 0.8s ease-out forwards;
+}
+
+.auth-submit:not(:disabled):active {
+  transform: scale(0.98) translate3d(0, 0, 0);
+}
+
+.auth-submit__corner {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  filter: blur(6px);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.auth-submit__corner--tl {
+  top: 6px;
+  left: 8px;
+  background: rgba(96, 165, 250, 0.9);
+  animation: auth-corner-twinkle 2s ease-in-out infinite;
+}
+
+.auth-submit__corner--br {
+  bottom: 6px;
+  right: 8px;
+  background: rgba(240, 171, 252, 0.95);
+  animation: auth-corner-twinkle 2s ease-in-out infinite 1s;
+}
+
+.auth-submit__content {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.auth-submit__arrow {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.auth-submit:not(:disabled):hover .auth-submit__arrow {
+  transform: translate3d(8px, 0, 0);
+}
+
+@keyframes auth-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.auth-submit__loader {
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: auth-spin 0.75s linear infinite;
+}
+
+@keyframes auth-loading-sweep {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.auth-submit--loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  animation: auth-loading-sweep 1.2s linear infinite;
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* ---- Alerts ---- */
+@keyframes auth-alert-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.auth-alert {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.8125rem;
+  animation: auth-alert-in 0.4s ease-out both;
+}
+
+.auth-alert--error {
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.08);
+  color: #be123c;
+}
+
+html.dark .auth-alert--error {
+  color: #fda4af;
+  border-color: rgba(251, 113, 133, 0.35);
+  background: rgba(251, 113, 133, 0.1);
+}
+
+.auth-alert--success {
+  border: 1px solid rgba(167, 243, 208, 0.9);
+  background: rgba(16, 185, 129, 0.08);
+  color: #047857;
+}
+
+html.dark .auth-alert--success {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+/* ---- Footer link ---- */
+.auth-link-gradient {
+  position: relative;
+  display: inline;
+  font-weight: 500;
+  background: linear-gradient(90deg, #2563eb, #4f46e5);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-decoration: none;
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+
+.auth-link-gradient:hover {
+  filter: brightness(1.08);
+  transform: translate3d(0, -1px, 0);
+}
+
+.auth-link-gradient::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, #2563eb, #6366f1);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s ease;
+}
+
+.auth-link-gradient:hover::after {
+  transform: scaleX(1);
+}
+
+.auth-divider {
+  height: 1px;
+  margin: 1.25rem 0;
+  background: linear-gradient(90deg, transparent, rgba(229, 231, 235, 0.95), transparent);
+}
+
+html.dark .auth-divider {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+}
+
+/* ---- Password strength ---- */
+.auth-strength-track {
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(229, 231, 235, 0.9);
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+
+html.dark .auth-strength-track {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.auth-strength-fill {
+  height: 100%;
+  border-radius: 1px;
+  transform-origin: left;
+  transition: width 0.35s ease, background-color 0.25s ease;
+}

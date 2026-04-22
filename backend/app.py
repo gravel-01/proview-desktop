@@ -1,7 +1,5 @@
 import base64
 import os
-import re
-import socket
 import uuid
 import json as json_mod
 import traceback
@@ -10,27 +8,19 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
-from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
-import config as app_config
 from config import (
     UPLOAD_FOLDER, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
     SECRET_KEY, CORS_ORIGINS, BAIDU_APP_KEY, BAIDU_SECRET_KEY,
-    ERNIE_API_KEY, ERNIE_BASE_URL, RAG_DB_PATH, PDF_OUTPUT_DIR
+    ERNIE_API_KEY, ERNIE_BASE_URL, RAG_DB_PATH
 )
 from auth import create_token, require_session, revoke_session
 from core.model_registry import init_providers, get_provider, get_default_provider, list_available_providers
-from services.ocr_result_utils import normalize_reusable_ocr_result
-from services.resume_preview_service import get_resume_preview_summary
-from services.resume_text_extraction import (
-    ResumeExtractionError,
-    ResumeOcrUnavailableError,
-    ensure_supported_resume_extension,
-    extract_resume_content,
-    unwrap_resume_text,
-)
+from services.ocr_result_utils import is_reusable_ocr_result, normalize_reusable_ocr_result
+from services.resume_preview_service import MAX_USER_RESUMES, get_resume_preview_summary
 from services.career_planning_service import CareerPlanningService
 from services.career_planning_docs import CareerPlanningDocumentRepository
+from services.navigation_preferences_service import calculate_module_order, sanitize_preferences
 
 # 直接导入 OCR 工具（不再依赖 Agent 自主决策）
 try:
@@ -46,30 +36,13 @@ app.secret_key = SECRET_KEY
 CORS(app, origins=CORS_ORIGINS, supports_credentials=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-def _reload_runtime_config_state() -> dict:
-    global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
-    global ERNIE_API_KEY, ERNIE_BASE_URL
-    global BAIDU_APP_KEY, BAIDU_SECRET_KEY
-
-    snapshot = app_config.reload_runtime_settings()
-
-    DEEPSEEK_API_KEY = app_config.DEEPSEEK_API_KEY
-    DEEPSEEK_BASE_URL = app_config.DEEPSEEK_BASE_URL
-    ERNIE_API_KEY = app_config.ERNIE_API_KEY
-    ERNIE_BASE_URL = app_config.ERNIE_BASE_URL
-    BAIDU_APP_KEY = app_config.BAIDU_APP_KEY
-    BAIDU_SECRET_KEY = app_config.BAIDU_SECRET_KEY
-
-    init_providers(
-        deepseek_api_key=DEEPSEEK_API_KEY,
-        deepseek_base_url=DEEPSEEK_BASE_URL,
-        ernie_api_key=ERNIE_API_KEY,
-        ernie_base_url=ERNIE_BASE_URL,
-    )
-    return snapshot
-
-
-_reload_runtime_config_state()
+# 初始化模型注册表
+init_providers(
+    deepseek_api_key=DEEPSEEK_API_KEY,
+    deepseek_base_url=DEEPSEEK_BASE_URL,
+    ernie_api_key=ERNIE_API_KEY,
+    ernie_base_url=ERNIE_BASE_URL,
+)
 
 # 加载岗位数据（启动时一次性读取 Excel）
 _positions: list[str] = []
@@ -126,214 +99,14 @@ def normalize_session_list(sessions):
     return [normalize_session_info(session) for session in (sessions or [])]
 
 
-def _get_server_host() -> str:
-    host = str(os.getenv("PROVIEW_API_HOST", "127.0.0.1")).strip()
-    return host or "127.0.0.1"
-
-
-def _get_server_port() -> int:
-    raw_port = str(os.getenv("PROVIEW_API_PORT") or os.getenv("PORT") or "5000").strip()
-    try:
-        port = int(raw_port)
-    except ValueError:
-        print(f"[WARN] Invalid PROVIEW_API_PORT={raw_port!r}, fallback to 5000")
-        return 5000
-    if 1 <= port <= 65535:
-        return port
-    print(f"[WARN] Out-of-range PROVIEW_API_PORT={raw_port!r}, fallback to 5000")
-    return 5000
-
-
-def _is_truthy_env(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _should_enable_debug_mode() -> bool:
-    for key in ("PROVIEW_DEBUG", "FLASK_DEBUG"):
-        raw_value = os.getenv(key)
-        if raw_value is not None and str(raw_value).strip():
-            return _is_truthy_env(raw_value)
-
-    if _is_truthy_env(os.getenv("PROVIEW_DESKTOP_MODE")):
-        return False
-
-    return True
-
-
-def _is_api_request() -> bool:
-    return str(request.path or "").startswith("/api/")
-
-
-@app.errorhandler(HTTPException)
-def _handle_api_http_exception(exc):
-    if not _is_api_request():
-        return exc
-
-    return jsonify({
-        "status": "error",
-        "message": exc.description or exc.name,
-    }), exc.code
-
-
-@app.errorhandler(Exception)
-def _handle_api_unexpected_exception(exc):
-    traceback.print_exc()
-
-    if not _is_api_request():
-        return "Internal Server Error", 500
-
-    return jsonify({
-        "status": "error",
-        "message": "服务器内部错误，请稍后重试。",
-    }), 500
-
-
-def _build_server_url(host: str, port: int) -> str:
-    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    return f"http://{display_host}:{port}"
-
-
-def _assert_server_bindable(host: str, port: int) -> None:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind((host, port))
-    except OSError as exc:
-        error_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
-        if error_code in {10013, 13}:
-            reason = "访问被拒绝，常见原因是端口被其他程序独占，或被 Windows 保留。"
-        elif error_code in {10048, 98}:
-            reason = "端口已被其他进程占用。"
-        else:
-            reason = str(exc)
-        raise RuntimeError(
-            f"无法绑定 {host}:{port}。{reason} "
-            "请关闭占用该端口的程序，或在 backend/.env 中设置 PROVIEW_API_PORT=其它端口。"
-        ) from exc
-    finally:
-        probe.close()
-
-
-def _save_uploaded_resume(file_storage):
-    raw_name = str(getattr(file_storage, "filename", "") or "").strip()
-    ext = ensure_supported_resume_extension(raw_name)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file_storage.save(file_path)
-    return filename, file_path
-
-
-def _extract_resume_payload(file_path: str, *, include_images: bool = False) -> dict:
-    return extract_resume_content(
-        file_path,
-        include_images=include_images,
-        ocr_available=OCR_AVAILABLE,
-        ocr_text_loader=perform_ocr if OCR_AVAILABLE else None,
-        ocr_full_loader=perform_ocr_full if OCR_AVAILABLE else None,
-        use_preprocessing=True,
-    )
-
-
-MIN_RESUME_TEXT_LENGTH = 50
-
-
-def _cleanup_local_resume_file(file_path: str) -> None:
-    path = str(file_path or "").strip()
-    if not path:
-        return
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
-
-
-def _has_usable_resume_text(value: object, minimum_chars: int = MIN_RESUME_TEXT_LENGTH) -> bool:
-    return len(str(value or "").strip()) >= minimum_chars
-
-
-def _build_reused_resume_payload(raw_text: object, *, source_label: str) -> dict:
-    raw_value = str(raw_text or "").strip()
-    reusable_text = normalize_reusable_ocr_result(raw_text)
-
-    if not reusable_text and _has_usable_resume_text(raw_value):
-        clean_raw_text = unwrap_resume_text(raw_value)
-        if _has_usable_resume_text(clean_raw_text):
-            reusable_text = f"【解析成功】已复用{source_label}内容\n\n以下是提取的内容:\n\n{clean_raw_text}"
-
-    clean_text = unwrap_resume_text(reusable_text)
-
-    if not reusable_text:
-        return {
-            "success": False,
-            "mode": "reused_text",
-            "source_label": source_label,
-            "text": "",
-            "reusable_text": "",
-            "raw_text": raw_value,
-            "images": {},
-            "error_message": f"{source_label}内容不可复用，请重新上传简历。",
-        }
-
-    if not _has_usable_resume_text(clean_text):
-        return {
-            "success": False,
-            "mode": "reused_text",
-            "source_label": source_label,
-            "text": "",
-            "reusable_text": reusable_text,
-            "raw_text": reusable_text,
-            "images": {},
-            "error_message": f"{source_label}内容过少或为空，请重新上传简历。",
-        }
-
-    return {
-        "success": True,
-        "mode": "reused_text",
-        "source_label": source_label,
-        "text": clean_text,
-        "reusable_text": reusable_text,
-        "raw_text": reusable_text,
-        "images": {},
-        "error_message": "",
-    }
-
-
 def _get_current_user_id_from_auth_header():
-    user_info = _get_current_user_info()
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer ") or not data_client:
+        return None
+
+    user_info = data_client.get_user(auth_header[7:])
     if user_info and "id" in user_info:
         return user_info["id"]
-    return None
-
-
-def _get_local_user_name() -> str:
-    value = str(getattr(app_config, "LOCAL_USER_NAME", "") or "").strip()
-    return value or "本地用户"
-
-
-def _apply_local_user_alias(user_info):
-    if not isinstance(user_info, dict):
-        return None
-
-    alias = _get_local_user_name()
-    normalized = dict(user_info)
-    normalized["username"] = alias
-    normalized["display_name"] = alias
-    return normalized
-
-
-def _get_current_user_info():
-    if not STORAGE_AVAILABLE or not data_client:
-        return None
-
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        user_info = data_client.get_user(auth_header[7:])
-        if user_info and "id" in user_info:
-            return _apply_local_user_alias(user_info)
-
-    local_user = data_client.get_or_create_local_user(_get_local_user_name())
-    if local_user and "id" in local_user:
-        return _apply_local_user_alias(local_user)
     return None
 
 
@@ -353,13 +126,45 @@ def _parse_career_plan_generate_payload(payload):
     return target_role, career_goal, horizon_months, refresh
 
 
+def _build_nav_preference_payload(raw_prefs):
+    prefs, warnings = sanitize_preferences(raw_prefs)
+    for message in warnings:
+        print(message)
+    module_order = calculate_module_order(prefs)
+    return {
+        "preferences": prefs,
+        "module_order": module_order,
+    }
+
+
+def _friendly_nav_preferences_save_error(exc: BaseException) -> str:
+    """Map storage/PostgREST errors to actionable UI text (e.g. missing Supabase table)."""
+    raw = str(exc)
+    if "PGRST205" in raw or (
+        "Could not find the table" in raw and "user_nav_preferences" in raw
+    ):
+        return (
+            "Supabase 中还没有数据表 public.user_nav_preferences。"
+            "请登录 Supabase 控制台 → SQL Editor，执行本仓库 "
+            "docs/database/SUPABASE_USER_NAV_PREFERENCES.sql 中的全部语句，"
+            "执行成功后等待约 1 分钟再点击提交。"
+        )
+    if "SSL" in raw or "SSLError" in raw or "UNEXPECTED_EOF" in raw:
+        return (
+            "连接 Supabase 时出现 SSL/网络中断，请检查网络、代理或 VPN 后重试。"
+            "若频繁出现，可尝试更换网络或稍后重试。"
+        )
+    return "保存导航偏好失败，请稍后重试"
+
+
 def _build_history_quota(user_id):
-    saved_count = data_client.count_user_sessions(user_id) if STORAGE_AVAILABLE and data_client else 0
+    saved_count = data_client.count_user_sessions(user_id) if data_client else 0
+    remaining = max(0, MAX_SAVED_HISTORY - saved_count)
     return {
         "saved_count": saved_count,
-        "max_saved": None,
-        "remaining": None,
-        "can_save": True,
+        "max_saved": MAX_SAVED_HISTORY,
+        "remaining": remaining,
+        "can_save": remaining > 0,
     }
 
 
@@ -418,6 +223,7 @@ STORAGE_INIT_ERROR = None
 data_client = None
 career_planning_service = None
 career_planning_docs = CareerPlanningDocumentRepository()
+MAX_SAVED_HISTORY = 15
 NEW_USER_HISTORY_GRACE_PERIOD = timedelta(minutes=30)
 
 
@@ -436,12 +242,15 @@ def _refresh_storage_status():
         return STORAGE_STATUS
 
     health = data_client.health() or {}
-    STORAGE_AVAILABLE = bool(health.get("db_ok"))
+    probe_ok = bool(health.get("db_ok"))
+    # 客户端已创建即可走业务 API（注册/登录等）；瞬时 SSL/网络失败不应把 STORAGE_AVAILABLE 永久打成 False。
+    # 真实连通性看 STORAGE_STATUS["connected"]（/api/health 等）。
+    STORAGE_AVAILABLE = True
     STORAGE_STATUS = {
-        "connected": STORAGE_AVAILABLE,
+        "connected": probe_ok,
         "mode": health.get("mode", getattr(data_client, "mode", None)),
         "url": health.get("db_url") or health.get("url"),
-        "db_error": health.get("db_error"),
+        "db_error": health.get("db_error") if not probe_ok else None,
         "fallback_reason": health.get("fallback_reason"),
     }
     return STORAGE_STATUS
@@ -457,10 +266,13 @@ try:
     from data_client import DataServiceClient
     data_client = DataServiceClient()
     _storage = _refresh_storage_status()
-    if STORAGE_AVAILABLE:
+    if _storage.get("connected"):
         print(f"[storage] connected via {_storage.get('mode')}: {_storage.get('url')}")
     else:
-        print(f"[storage] unavailable: {_storage.get('db_error')}")
+        print(
+            f"[storage] client ready; health probe failed (registration/login will still be attempted): "
+            f"{_storage.get('db_error')}"
+        )
     try:
         career_planning_service = CareerPlanningService(data_client)
         print(f"[career] schema ready: {career_planning_service.health()}")
@@ -474,6 +286,34 @@ except Exception as e:
     career_planning_service = None
     _refresh_storage_status()
 
+# 健康探测失败时，按间隔重跑 health()，更新 STORAGE_STATUS["connected"]（供 /api/health 与运维观察）。
+_storage_last_reprobe_monotonic = None
+_STORAGE_REPROBE_MIN_INTERVAL_SEC = 10.0
+
+
+def _maybe_reprobe_storage():
+    global _storage_last_reprobe_monotonic
+    if data_client is None or STORAGE_STATUS.get("connected"):
+        return
+    import time
+
+    now = time.monotonic()
+    if (
+        _storage_last_reprobe_monotonic is not None
+        and now - _storage_last_reprobe_monotonic < _STORAGE_REPROBE_MIN_INTERVAL_SEC
+    ):
+        return
+    _storage_last_reprobe_monotonic = now
+    _refresh_storage_status()
+    if STORAGE_STATUS.get("connected"):
+        print(f"[storage] health recovered: {STORAGE_STATUS.get('mode')} {STORAGE_STATUS.get('url')}")
+
+
+@app.before_request
+def _before_request_reprobe_storage():
+    _maybe_reprobe_storage()
+
+
 # 导入简历分析模块
 ANALYZER_AVAILABLE = False
 try:
@@ -485,28 +325,18 @@ except Exception as e:
 # 导入百度语音模块
 SPEECH_AVAILABLE = False
 _speech_client = None
-
-
-def _refresh_speech_client() -> None:
-    global SPEECH_AVAILABLE, _speech_client
-    SPEECH_AVAILABLE = False
-    _speech_client = None
-
-    try:
-        if BAIDU_APP_KEY and BAIDU_SECRET_KEY:
-            from core.baidu_speech import BaiduSpeechClient
-            _speech_client = BaiduSpeechClient(
-                app_key=BAIDU_APP_KEY, secret_key=BAIDU_SECRET_KEY
-            )
-            SPEECH_AVAILABLE = True
-            print("[OK] Baidu speech module loaded")
-        else:
-            print("[WARN] BAIDU_APP_KEY / BAIDU_SECRET_KEY not configured, speech unavailable")
-    except Exception as e:
-        print(f"[WARN] Import Baidu speech module failed: {e}")
-
-
-_refresh_speech_client()
+try:
+    if BAIDU_APP_KEY and BAIDU_SECRET_KEY:
+        from core.baidu_speech import BaiduSpeechClient
+        _speech_client = BaiduSpeechClient(
+            app_key=BAIDU_APP_KEY, secret_key=BAIDU_SECRET_KEY
+        )
+        SPEECH_AVAILABLE = True
+        print("[OK] Baidu speech module loaded")
+    else:
+        print("[WARN] BAIDU_APP_KEY / BAIDU_SECRET_KEY not configured, speech unavailable")
+except Exception as e:
+    print(f"[WARN] Import Baidu speech module failed: {e}")
 
 # Per-session agent 管理
 _agents: dict[str, object] = {}
@@ -551,7 +381,7 @@ def get_agent(session_id: str, model_provider: str = ""):
         observer = EvalObserver(
             session_id=session_id,
             llm_client=agent.llm_client,
-            data_client=data_client if STORAGE_AVAILABLE else None,
+            data_client=data_client,
         )
         # 设置 SSE 推送回调（将在 chat-stream 中绑定到具体 SSE 响应）
         _observers[session_id] = observer
@@ -645,238 +475,6 @@ def _build_rag_debug_details(
     }
 
 
-def _build_resume_summary_fallback(resume_text: str, max_items: int = 8) -> str:
-    """Use extracted resume lines as a deterministic fallback when LLM summary is empty."""
-    text = str(resume_text or "").strip()
-    if not text:
-        return ""
-
-    lines = []
-    seen = set()
-    for raw_line in text.replace("\r", "\n").split("\n"):
-        line = re.sub(r"\s+", " ", raw_line).strip(" \t-•*|")
-        if len(line) < 2:
-            continue
-        if line.startswith("以下是提取的内容"):
-            continue
-        if line in seen:
-            continue
-        seen.add(line)
-        lines.append(line[:140])
-        if len(lines) >= max_items:
-            break
-
-    if not lines:
-        compact = re.sub(r"\s+", " ", text)
-        return compact[:800]
-
-    return "以下为基于简历原文抽取的候选人要点：\n" + "\n".join(f"- {line}" for line in lines)
-
-
-def _build_job_title_candidates(job_title: str) -> list[str]:
-    """Relax title matching so RAG can still hit entries like 前端工程师 / 后端工程师."""
-    raw = normalize_job_title(job_title)
-    candidates: list[str] = []
-
-    def _add(value: str):
-        text = re.sub(r"\s+", " ", str(value or "")).strip()
-        if text and text not in candidates:
-            candidates.append(text)
-
-    _add(raw)
-
-    relaxed = re.sub(r"^(高级|资深|中级|初级|高阶|专家级?)", "", raw or "").strip()
-    relaxed = re.sub(r"(高级|资深|中级|初级)$", "", relaxed).strip()
-    _add(relaxed)
-
-    replacements = {
-        "前端开发工程师": "前端工程师",
-        "后端开发工程师": "后端工程师",
-        "Java开发工程师": "Java工程师",
-        "Python开发工程师": "Python工程师",
-        "Golang开发工程师": "Golang工程师",
-    }
-    for source, target in replacements.items():
-        if source in raw:
-            _add(raw.replace(source, target))
-        if relaxed and source in relaxed:
-            _add(relaxed.replace(source, target))
-
-    return candidates
-
-
-def _runtime_config_allowed() -> bool:
-    if os.getenv("PROVIEW_ALLOW_RUNTIME_CONFIG") == "1" or os.getenv("PROVIEW_DESKTOP_MODE") == "1":
-        return True
-
-    remote_addr = str(request.remote_addr or "").strip().lower()
-    host = str(request.host or "").split(":", 1)[0].strip().lower()
-    return (
-        remote_addr in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
-        or host in {"127.0.0.1", "localhost"}
-    )
-
-
-def _forbid_runtime_config_if_needed():
-    if not _runtime_config_allowed():
-        return jsonify({
-            "status": "error",
-            "message": "当前环境未开启运行时配置写入能力"
-        }), 403
-    return None
-
-
-def _retrieve_rag_context(
-    *,
-    job_title: str,
-    difficulty: str,
-    interview_type: str,
-    style: str,
-    resume_text: str,
-    stage: str,
-):
-    if not (STORAGE_AVAILABLE and data_client):
-        return "", _build_rag_debug_details(
-            query="",
-            job_title=job_title,
-            difficulty=difficulty,
-            interview_type=interview_type,
-            style=style,
-            stage=stage,
-            status="not_started",
-        )
-
-    resume_keywords = str(resume_text or "").strip()[:300]
-    last_debug = _build_rag_debug_details(
-        query="",
-        job_title=job_title,
-        difficulty=difficulty,
-        interview_type=interview_type,
-        style=style,
-        stage=stage,
-        status="empty",
-    )
-
-    for title_candidate in _build_job_title_candidates(job_title):
-        rag_parts = []
-        jobs = []
-        questions = []
-        scripts = []
-        enriched_query = f"{title_candidate} {resume_keywords}".strip() or title_candidate
-
-        try:
-            jobs = data_client.search_job_descriptions(
-                title_candidate,
-                top_k=1,
-                difficulty=difficulty,
-                interview_type=interview_type,
-            )
-            if jobs:
-                job = jobs[0]
-                meta = job.get("metadata", {})
-                must_have = ", ".join(meta.get("must_have_skills") or [])
-                tech_tags = ", ".join(meta.get("tech_tags") or []) or meta.get("tags", "")
-                rag_parts.append(
-                    f"### 岗位画像\n"
-                    f"- 岗位：{meta.get('job_name', '') or meta.get('canonical_job_title', '')}\n"
-                    f"- 关键技能：{must_have}\n"
-                    f"- 技术标签：{tech_tags}\n"
-                    f"- 要求：{job.get('document', '')[:500]}"
-                )
-
-            questions = data_client.search_questions(
-                enriched_query,
-                job_filter=title_candidate,
-                top_k=5,
-                difficulty=difficulty,
-                interview_type=interview_type,
-                style=style,
-                stage="core",
-            )
-            if questions:
-                q_lines = []
-                for idx, item in enumerate(questions, 1):
-                    meta = item.get("metadata", {})
-                    q_lines.append(
-                        f"{idx}. [{meta.get('dimension', '')}] {(item.get('document', '') or item.get('content', ''))[:200]}"
-                    )
-                    if meta.get("score_5"):
-                        q_lines.append(f"   5分标准：{meta['score_5'][:150]}")
-                    if meta.get("score_1"):
-                        q_lines.append(f"   1分标准：{meta['score_1'][:100]}")
-                rag_parts.append("### 推荐面试题及评分标准\n" + "\n".join(q_lines))
-
-            scripts = data_client.search_hr_scripts(
-                f"{title_candidate} {style} 面试 开场 自我介绍",
-                stage="开场",
-                top_k=2,
-                interview_type=interview_type,
-                style=style,
-            )
-            if scripts:
-                s_lines = [
-                    f"- [{item.get('metadata', {}).get('stage', '')}] {(item.get('document', '') or item.get('content', ''))[:200]}"
-                    for item in scripts
-                ]
-                rag_parts.append("### 参考话术\n" + "\n".join(s_lines))
-
-            debug = _build_rag_debug_details(
-                query=enriched_query,
-                job_title=title_candidate,
-                difficulty=difficulty,
-                interview_type=interview_type,
-                style=style,
-                stage=stage,
-                status="matched" if rag_parts else "empty",
-                jobs=jobs,
-                questions=questions,
-                scripts=scripts,
-            )
-            last_debug = debug
-
-            if rag_parts:
-                return "\n\n".join(rag_parts), debug
-        except Exception as exc:
-            last_debug = _build_rag_debug_details(
-                query=enriched_query,
-                job_title=title_candidate,
-                difficulty=difficulty,
-                interview_type=interview_type,
-                style=style,
-                stage=stage,
-                status="error",
-                error=str(exc),
-                jobs=jobs,
-                questions=questions,
-                scripts=scripts,
-            )
-            print(f"[WARN] RAG retrieval failed for {title_candidate}: {exc}")
-
-    return "", last_debug
-
-
-def _resolve_session_owner_id(session_id: str):
-    if not (STORAGE_AVAILABLE and data_client):
-        return None
-
-    try:
-        session_info = data_client.get_session_info(session_id) or {}
-    except Exception:
-        return None
-
-    return session_info.get("user_id")
-
-
-def _parse_save_history_payload(default: bool = True) -> bool:
-    data = request.get_json(silent=True) or {}
-    raw = data.get("save_history", default)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        return raw.strip().lower() not in {"false", "0", "no", "off"}
-    return bool(raw)
-
-
 def _has_self_intro_request(response_text: str) -> bool:
     text = (response_text or "").strip()
     if not text:
@@ -903,7 +501,7 @@ _prompt_generator = None
 EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS = 3.0
 
 
-def _try_generate_prompt(job_title, interview_type, difficulty, style, resume_summary, job_requirements=""):
+def _try_generate_prompt(job_title, interview_type, difficulty, style, resume_summary):
     """尝试使用 PromptGenerator 生成定制 prompt，失败返回空字符串（降级到静态模板）"""
     global _prompt_generator
     try:
@@ -918,8 +516,7 @@ def _try_generate_prompt(job_title, interview_type, difficulty, style, resume_su
             interview_type=interview_type,
             difficulty=difficulty,
             style=style,
-            resume_summary=resume_summary,
-            job_requirements=job_requirements,
+            resume_summary=resume_summary
         )
     except ImportError:
         # prompt_generator.py 尚未创建，静默降级
@@ -939,60 +536,6 @@ def health():
         },
         "agent_available": AGENT_AVAILABLE,
         "ocr_available": OCR_AVAILABLE,
-        "runtime_config_enabled": _runtime_config_allowed(),
-    })
-
-
-@app.route('/api/runtime-config', methods=['GET'])
-def get_runtime_config():
-    forbidden = _forbid_runtime_config_if_needed()
-    if forbidden:
-        return forbidden
-
-    snapshot = app_config.get_runtime_config_snapshot(mask_secrets=True)
-    return jsonify({
-        "status": "success",
-        **snapshot,
-        "models": list_available_providers(),
-        "speech_available": SPEECH_AVAILABLE,
-    })
-
-
-@app.route('/api/runtime-config', methods=['POST'])
-def update_runtime_config():
-    forbidden = _forbid_runtime_config_if_needed()
-    if forbidden:
-        return forbidden
-
-    payload = request.get_json(silent=True) or {}
-    fields = payload.get("fields") if isinstance(payload, dict) else None
-    if not isinstance(fields, dict):
-        return jsonify({
-            "status": "error",
-            "message": "fields 必须是对象"
-        }), 400
-
-    updates = {
-        key: value
-        for key, value in fields.items()
-        if key in app_config.RUNTIME_CONFIG_FIELDS
-    }
-    if not updates:
-        return jsonify({
-            "status": "error",
-            "message": "未提供可更新的配置项"
-        }), 400
-
-    snapshot = app_config.persist_runtime_config(updates)
-    _reload_runtime_config_state()
-    _refresh_speech_client()
-
-    return jsonify({
-        "status": "success",
-        **snapshot,
-        "models": list_available_providers(),
-        "speech_available": SPEECH_AVAILABLE,
-        "message": "运行配置已保存",
     })
 
 
@@ -1008,31 +551,134 @@ def get_positions():
     return jsonify({"positions": _positions})
 
 
+# ==========================================
+# 用户认证 API（转发到数据服务）
+# ==========================================
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    if not data_client:
+        return jsonify({
+            "status": "error",
+            "message": "数据服务未初始化。请配置 SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY（推荐）或 BACKEND_DB_URL / DATABASE_URL。",
+        }), 503
+    data = request.json or {}
+    result = data_client.register(
+        username=data.get('username', ''),
+        password=data.get('password', ''),
+        display_name=data.get('display_name', ''),
+    )
+    if not result:
+        return jsonify({"status": "error", "message": "数据服务连接失败"}), 502
+    if "error" in result:
+        return jsonify({"status": "error", "message": result["error"]}), result.get("status_code", 400)
+    return jsonify({"status": "success", **result})
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    if not data_client:
+        return jsonify({
+            "status": "error",
+            "message": "数据服务未初始化。请配置 SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY（推荐）或 BACKEND_DB_URL / DATABASE_URL。",
+        }), 503
+    data = request.json or {}
+    result = data_client.login(
+        username=data.get('username', ''),
+        password=data.get('password', ''),
+    )
+    if not result:
+        return jsonify({"status": "error", "message": "数据服务连接失败"}), 502
+    if "error" in result:
+        return jsonify({"status": "error", "message": result["error"]}), result.get("status_code", 401)
+    return jsonify({"status": "success", **result})
+
+
 @app.route('/api/auth/me', methods=['GET'])
 def auth_me():
-    if not STORAGE_AVAILABLE:
-        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
-    user = _get_current_user_info()
+    if not data_client:
+        return jsonify({
+            "status": "error",
+            "message": "数据服务未初始化。请配置 SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY（推荐）或 BACKEND_DB_URL / DATABASE_URL。",
+        }), 503
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({"status": "error", "message": "缺少认证 token"}), 401
+    jwt_token = auth_header[7:]
+    user = data_client.get_user(jwt_token)
     if not user:
-        return jsonify({"status": "error", "message": "本机用户初始化失败"}), 500
+        return jsonify({"status": "error", "message": "token 无效或已过期"}), 401
     return jsonify({"status": "success", "user": user})
+
+
+@app.route('/api/nav-preferences', methods=['GET'])
+def get_nav_preferences():
+    if not data_client:
+        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "请先登录"}), 401
+
+    stored = data_client.get_nav_preferences(user_id) or {}
+    payload = _build_nav_preference_payload(stored)
+    return jsonify({"status": "success", "has_saved": bool(stored), **payload})
+
+
+@app.route('/api/nav-preferences', methods=['PUT'])
+def update_nav_preferences():
+    if not data_client:
+        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "请先登录"}), 401
+
+    incoming = request.get_json(silent=True) or {}
+    payload = _build_nav_preference_payload(incoming)
+    prefs = payload["preferences"]
+    try:
+        saved = data_client.upsert_nav_preferences(
+            user_id=user_id,
+            goal=prefs["goal"],
+            stage=prefs["stage"],
+            difficulty=prefs["difficulty"],
+            career=prefs["career"],
+        )
+    except Exception as exc:
+        print(f"[app] upsert_nav_preferences failed: {exc}")
+        return jsonify({"status": "error", "message": _friendly_nav_preferences_save_error(exc)}), 502
+    if not saved:
+        return jsonify({"status": "error", "message": "保存导航偏好失败，请稍后重试"}), 502
+    return jsonify({
+        "status": "success",
+        "has_saved": True,
+        "preferences": {
+            "goal": saved.get("goal", prefs["goal"]),
+            "stage": saved.get("stage", prefs["stage"]),
+            "difficulty": saved.get("difficulty", prefs["difficulty"]),
+            "career": saved.get("career", prefs["career"]),
+        },
+        "module_order": payload["module_order"],
+    })
 
 
 # ── 面试历史 ──
 
 @app.route('/api/history/sessions', methods=['GET'])
 def list_user_sessions():
-    """获取当前本机用户的面试历史列表"""
-    if not STORAGE_AVAILABLE or not data_client:
+    """获取当前登录用户的面试历史列表"""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer ") or not data_client:
         return jsonify([])
-    user_info = _get_current_user_info()
+    user_info = data_client.get_user(auth_header[7:])
     if not user_info or "id" not in user_info:
         return jsonify([])
     user_id = user_info["id"]
-    sessions = data_client.list_sessions(limit=None, user_id=user_id)
+    sessions = data_client.list_sessions(limit=50, user_id=user_id)
     # 兼容旧数据：如果按 user_id 查不到，也返回 user_id 为空的 session
     if not sessions and not _is_new_user(user_info):
-        all_sessions = data_client.list_sessions(limit=None)
+        all_sessions = data_client.list_sessions(limit=20)
         sessions = [s for s in all_sessions if not s.get("user_id")]
     return jsonify(normalize_session_list(sessions))
 
@@ -1040,7 +686,7 @@ def list_user_sessions():
 @app.route('/api/history/sessions/<session_id>', methods=['GET'])
 def get_session_detail(session_id):
     """获取某次面试的完整详情（元信息 + 聊天记录 + 评分）"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"error": "数据服务不可用"}), 503
     session_info = normalize_session_info(data_client.get_session_info(session_id))
     if not session_info:
@@ -1056,12 +702,12 @@ def get_session_detail(session_id):
 
 @app.route('/api/history/sessions/<session_id>', methods=['DELETE'])
 def delete_session_detail(session_id):
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"status": "error", "message": "storage unavailable"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "missing auth token"}), 401
 
     deleted = data_client.delete_session(session_id, user_id)
     if not deleted:
@@ -1075,12 +721,12 @@ def delete_session_detail(session_id):
 
 @app.route('/api/history/quota', methods=['GET'])
 def get_history_quota():
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"status": "error", "message": "storage unavailable"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "missing auth token"}), 401
 
     return jsonify(_build_history_quota(user_id))
 
@@ -1088,7 +734,7 @@ def get_history_quota():
 @app.route('/api/history/resume/<session_id>', methods=['GET'])
 def get_session_resume(session_id):
     """获取某次面试关联的简历 OCR 文本"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify(None)
     resume = data_client.get_resume_by_session(session_id)
     return jsonify(resume)
@@ -1097,7 +743,7 @@ def get_session_resume(session_id):
 @app.route('/api/history/resume/latest', methods=['GET'])
 def get_latest_resume():
     """获取当前用户最近一条有 OCR 结果的简历"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify(None)
     user_id = _get_current_user_id_from_auth_header()
     resume = data_client.get_latest_resume(user_id=user_id)
@@ -1107,11 +753,12 @@ def get_latest_resume():
 @app.route('/api/my-resumes', methods=['GET'])
 def list_my_resumes():
     """获取当前用户的所有简历列表"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify([])
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
         return jsonify([])
+    data_client.enforce_resume_limit(user_id, MAX_USER_RESUMES)
     resumes = data_client.list_user_resumes(user_id)
     return jsonify([_serialize_resume_library_record(record) for record in resumes])
 
@@ -1119,11 +766,10 @@ def list_my_resumes():
 @app.route('/api/my-resumes/<int:resume_id>/file', methods=['GET'])
 def get_resume_file(resume_id):
     """获取简历原始文件"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"error": "存储服务不可用"}), 503
     try:
-        current_user_id = _get_current_user_id_from_auth_header()
-        record = data_client.get_resume_file_record(resume_id, user_id=current_user_id)
+        record = data_client.get_resume_file_record(resume_id)
         if not record:
             return jsonify({"error": "文件不存在"}), 404
 
@@ -1145,12 +791,12 @@ def get_resume_file(resume_id):
 @app.route('/api/my-resumes/<int:resume_id>', methods=['DELETE'])
 def delete_my_resume(resume_id):
     """删除当前用户的简历，并清理服务器文件与预览图。"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"status": "error", "message": "存储服务不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     deleted = data_client.delete_resume(resume_id, user_id)
     if not deleted:
@@ -1161,12 +807,11 @@ def delete_my_resume(resume_id):
 @app.route('/api/my-resumes/<int:resume_id>/preview/<int:page>', methods=['GET'])
 def get_resume_preview(resume_id, page):
     """返回简历的图片化预览页。"""
-    if not STORAGE_AVAILABLE or not data_client:
+    if not data_client:
         return jsonify({"error": "存储服务不可用"}), 503
 
     try:
-        current_user_id = _get_current_user_id_from_auth_header()
-        record = data_client.get_resume_file_record(resume_id, user_id=current_user_id)
+        record = data_client.get_resume_file_record(resume_id)
         if not record:
             return jsonify({"error": "简历不存在"}), 404
 
@@ -1187,12 +832,12 @@ def get_resume_preview(resume_id, page):
 
 @app.route('/api/career/dashboard', methods=['GET'])
 def get_career_dashboard():
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     try:
         dashboard = career_planning_service.build_dashboard(user_id)
@@ -1204,12 +849,12 @@ def get_career_dashboard():
 
 @app.route('/api/career/docs', methods=['GET'])
 def get_career_docs():
-    if not STORAGE_AVAILABLE or not data_client:
-        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+    if not data_client:
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     try:
         return jsonify({"status": "success", "data": career_planning_docs.get_catalog()})
@@ -1220,12 +865,12 @@ def get_career_docs():
 
 @app.route('/api/career/docs/<doc_id>', methods=['GET'])
 def get_career_doc(doc_id):
-    if not STORAGE_AVAILABLE or not data_client:
-        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+    if not data_client:
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     try:
         document = career_planning_docs.get_document(doc_id)
@@ -1239,12 +884,12 @@ def get_career_doc(doc_id):
 
 @app.route('/api/career/plans', methods=['GET'])
 def list_career_plans():
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     try:
         dashboard = career_planning_service.build_dashboard(user_id)
@@ -1256,12 +901,12 @@ def list_career_plans():
 
 @app.route('/api/career/plans/generate', methods=['POST'])
 def generate_career_plan():
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     payload = request.get_json(silent=True) or {}
     try:
@@ -1283,12 +928,12 @@ def generate_career_plan():
 
 @app.route('/api/career/plans/<int:plan_id>', methods=['GET'])
 def get_career_plan(plan_id):
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     try:
         detail = career_planning_service._fetch_plan_detail(plan_id, user_id)
@@ -1302,12 +947,12 @@ def get_career_plan(plan_id):
 
 @app.route('/api/career/tasks/<int:task_id>', methods=['PATCH'])
 def update_career_task(task_id):
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     payload = request.get_json(silent=True) or {}
     try:
@@ -1328,12 +973,12 @@ def update_career_task(task_id):
 
 @app.route('/api/career/tasks/<int:task_id>/logs', methods=['POST'])
 def append_career_task_log(task_id):
-    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+    if not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
     user_id = _get_current_user_id_from_auth_header()
     if user_id is None:
-        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+        return jsonify({"status": "error", "message": "请先登录"}), 401
 
     payload = request.get_json(silent=True) or {}
     try:
@@ -1363,39 +1008,17 @@ def setup_interview():
     feature_deep = request.form.get('feature_deep', 'true') == 'true'
     model_provider = request.form.get('model_provider', '')
     resume_ocr_text = request.form.get('resume_ocr_text', '')
-    job_requirements = request.form.get('job_requirements', '').strip()
-    file_path = ""
-    filename = ""
-    explicit_resume_requested = False
-    prepared_resume = None
-
-    current_user_id = _get_current_user_id_from_auth_header()
-
-    if 'resume' in request.files:
-        file = request.files['resume']
-        if file.filename != '':
-            explicit_resume_requested = True
-            try:
-                filename, file_path = _save_uploaded_resume(file)
-                prepared_resume = _extract_resume_payload(file_path)
-                if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
-                    _cleanup_local_resume_file(file_path)
-                    return jsonify({"status": "error", "message": message}), 400
-            except ResumeOcrUnavailableError as exc:
-                _cleanup_local_resume_file(file_path)
-                return jsonify({"status": "error", "message": str(exc)}), 503
-            except ResumeExtractionError as exc:
-                _cleanup_local_resume_file(file_path)
-                return jsonify({"status": "error", "message": str(exc)}), 400
-    elif resume_ocr_text:
-        explicit_resume_requested = True
-        prepared_resume = _build_reused_resume_payload(resume_ocr_text, source_label="历史简历")
-        if not prepared_resume["success"]:
-            return jsonify({"status": "error", "message": prepared_resume["error_message"]}), 400
 
     session_id = str(uuid.uuid4())
     token = create_token(session_id)
+
+    # 尝试从 JWT 提取当前登录用户 ID
+    current_user_id = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and STORAGE_AVAILABLE and data_client:
+        user_info = data_client.get_user(auth_header[7:])
+        if user_info and "id" in user_info:
+            current_user_id = user_info["id"]
 
     if STORAGE_AVAILABLE:
         data_client.create_session(
@@ -1403,50 +1026,61 @@ def setup_interview():
             candidate_name="求职者",
             position=job_title,
             interview_style=style,
-            metadata={
-                "type": interview_type,
-                "diff": difficulty,
-                "vad": feature_vad,
-                "deep": feature_deep,
-                "job_requirements": job_requirements,
-            },
+            metadata={"type": interview_type, "diff": difficulty, "vad": feature_vad, "deep": feature_deep},
             user_id=current_user_id,
         )
 
     agent = get_agent(session_id, model_provider=model_provider)
 
+    has_resume = False
+    file_path = ""
+    filename = ""
+
+    if 'resume' in request.files:
+        file = request.files['resume']
+        if file.filename != '':
+            has_resume = True
+            raw_name = file.filename
+            ext = os.path.splitext(raw_name)[-1].lower()
+            if ext not in ('.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.heic', '.heif'):
+                ext = '.pdf'
+            filename = f"{uuid.uuid4().hex}{ext}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+
     try:
         resume_summary = ""
         ocr_raw_text = ""
-        ocr_reusable_text = ""
         ocr_status = "not_called"  # not_called | success | error | unavailable
         prompt_source = "static"
-        has_resume = bool(prepared_resume)
-
-        if prepared_resume:
-            ocr_raw_text = prepared_resume["text"]
-            ocr_reusable_text = prepared_resume["reusable_text"]
-            ocr_status = "success"
 
         if agent:
             parse_result_text = ""
             all_steps = []
 
             # ── 阶段 1：获取 OCR 文本（串行，后续步骤依赖它） ──
-            if prepared_resume:
-                has_resume = True
-                ocr_raw_text = prepared_resume["text"]
-                ocr_reusable_text = prepared_resume["reusable_text"]
-                ocr_status = "success"
-                print(f"[RESUME] Parsed resume via {prepared_resume['mode']}: {file_path or 'history_resume'}")
-                all_steps.append({
-                    "tool": "resume_reuse" if prepared_resume["mode"] == "reused_text" else ("perform_ocr" if prepared_resume["mode"] == "ocr" else "extract_resume_text"),
-                    "tool_input": file_path or "历史简历文本",
-                    "log": "自动选择 OCR、直接文本提取或复用已保存简历内容",
-                    "observation": (ocr_reusable_text or prepared_resume["error_message"])[:2000]
-                })
+            if has_resume:
+                if OCR_AVAILABLE:
+                    try:
+                        print(f"[OCR] Parsing resume via OCR: {file_path}")
+                        ocr_result = perform_ocr(image_path=file_path, use_preprocessing=True)
+                        ocr_raw_text = ocr_result
+                        ocr_status = "success" if "解析成功" in ocr_result else "error"
+                        all_steps.append({
+                            "tool": "perform_ocr",
+                            "tool_input": file_path,
+                            "log": "直接调用 OCR（非 Agent 自主决策）",
+                            "observation": ocr_result[:2000]
+                        })
+                    except Exception as ocr_err:
+                        ocr_status = "error"
+                        ocr_raw_text = f"OCR 调用异常: {str(ocr_err)}"
+                        print(f"[FAIL] OCR call failed: {ocr_err}")
+                else:
+                    ocr_status = "unavailable"
+                    ocr_raw_text = "OCR 模块未加载，无法解析简历"
 
-                if file_path and STORAGE_AVAILABLE:
+                if STORAGE_AVAILABLE:
                     stored_path = file_path
                     upload_result = data_client.upload_resume_file(session_id, file_path)
                     if upload_result and upload_result.get("file_path"):
@@ -1458,28 +1092,31 @@ def setup_interview():
                         session_id,
                         filename,
                         stored_path,
-                        normalize_reusable_ocr_result(ocr_reusable_text),
+                        normalize_reusable_ocr_result(ocr_raw_text if ocr_status == "success" else ""),
                         user_id=current_user_id,
                     )
+
+            elif resume_ocr_text:
+                has_resume = True
+                ocr_raw_text = resume_ocr_text
+                ocr_status = "success"
+                print(f"[OCR] Reusing historical resume OCR text ({len(resume_ocr_text)} chars)")
+                all_steps.append({
+                    "tool": "resume_reuse",
+                    "tool_input": "历史 OCR 文本",
+                    "log": "复用上次面试的简历 OCR 结果",
+                    "observation": resume_ocr_text[:500]
+                })
 
             else:
                 # 未上传简历：自动加载该用户最近一次有 OCR 结果的简历
                 if STORAGE_AVAILABLE and data_client and current_user_id:
                     try:
                         latest_resume = data_client.get_latest_resume(user_id=current_user_id)
-                        if latest_resume:
-                            reused_resume = _build_reused_resume_payload(
-                                latest_resume.get("ocr_result"),
-                                source_label="历史简历",
-                            )
-                        else:
-                            reused_resume = None
-
-                        if reused_resume and reused_resume["success"]:
-                            hist_ocr = reused_resume["reusable_text"]
+                        if latest_resume and is_reusable_ocr_result(latest_resume.get("ocr_result")):
+                            hist_ocr = latest_resume["ocr_result"]
                             has_resume = True
-                            ocr_raw_text = reused_resume["text"]
-                            ocr_reusable_text = reused_resume["reusable_text"]
+                            ocr_raw_text = hist_ocr
                             ocr_status = "success"
                             print(f"[OCR] Auto-loaded user historical resume ({len(hist_ocr)} chars)")
                             all_steps.append({
@@ -1509,28 +1146,107 @@ def setup_interview():
                     return "", []
                 q = f"请用简洁的中文总结以下简历的核心信息（姓名、技能、项目经历、教育背景），不要遗漏关键细节：\n\n{ocr_raw_text[:6000]}"
                 resp, steps = agent.run(q)
-                if not str(resp or "").strip():
-                    fallback = _build_resume_summary_fallback(ocr_raw_text)
-                    if fallback:
-                        steps = steps + [{
-                            "tool": "resume_summary_fallback",
-                            "tool_input": "基于简历原文的确定性摘要回退",
-                            "log": "LLM 摘要为空，回退到原文抽取摘要",
-                            "observation": fallback[:500],
-                        }]
-                        return fallback, steps
                 return resp, steps
 
             def _task_rag():
-                """RAG 检索（用 OCR 原文片段代替 LLM 摘要做查询 enrichment）。"""
-                return _retrieve_rag_context(
-                    job_title=job_title,
-                    difficulty=difficulty,
-                    interview_type=interview_type,
-                    style=style,
-                    resume_text=ocr_raw_text,
-                    stage="opening",
-                )
+                """RAG 检索（用 OCR 原文片段代替 LLM 摘要做查询enrichment）"""
+                if not (STORAGE_AVAILABLE and data_client):
+                    return ""
+                try:
+                    rag_parts = []
+                    jobs = []
+                    questions = []
+                    scripts = []
+                    # 直接用 OCR 原文前 300 字做查询enrichment，不等 LLM 摘要
+                    resume_keywords = ocr_raw_text[:300] if ocr_raw_text else ""
+                    enriched_query = f"{job_title} {resume_keywords}".strip()
+
+                    jobs = data_client.search_job_descriptions(
+                        job_title,
+                        top_k=1,
+                        difficulty=difficulty,
+                        interview_type=interview_type,
+                    )
+                    if jobs:
+                        j = jobs[0]
+                        meta = j.get("metadata", {})
+                        must_have = ", ".join(meta.get("must_have_skills") or [])
+                        tech_tags = ", ".join(meta.get("tech_tags") or []) or meta.get("tags", "")
+                        rag_parts.append(
+                            f"### 岗位画像\n"
+                            f"- 岗位：{meta.get('job_name', '') or meta.get('canonical_job_title', '')}\n"
+                            f"- 关键技能：{must_have}\n"
+                            f"- 技术标签：{tech_tags}\n"
+                            f"- 要求：{j.get('document', '')[:500]}"
+                        )
+
+                    questions = data_client.search_questions(
+                        enriched_query,
+                        job_filter=job_title,
+                        top_k=5,
+                        difficulty=difficulty,
+                        interview_type=interview_type,
+                        style=style,
+                        stage="core",
+                    )
+                    if questions:
+                        q_lines = []
+                        for idx, q in enumerate(questions, 1):
+                            meta = q.get("metadata", {})
+                            q_lines.append(f"{idx}. [{meta.get('dimension', '')}] {(q.get('document', '') or q.get('content', ''))[:200]}")
+                            if meta.get("score_5"):
+                                q_lines.append(f"   5分标准：{meta['score_5'][:150]}")
+                            if meta.get("score_1"):
+                                q_lines.append(f"   1分标准：{meta['score_1'][:100]}")
+                        rag_parts.append("### 推荐面试题及评分标准\n" + "\n".join(q_lines))
+
+                    scripts = data_client.search_hr_scripts(
+                        f"{job_title} {style} 面试 开场 自我介绍",
+                        stage="开场",
+                        top_k=2,
+                        interview_type=interview_type,
+                        style=style,
+                    )
+                    if scripts:
+                        s_lines = [
+                            f"- [{s.get('metadata', {}).get('stage', '')}] {(s.get('document', '') or s.get('content', ''))[:200]}"
+                            for s in scripts
+                        ]
+                        rag_parts.append("### 参考话术\n" + "\n".join(s_lines))
+
+                    rag_debug_details = _build_rag_debug_details(
+                        query=enriched_query,
+                        job_title=job_title,
+                        difficulty=difficulty,
+                        interview_type=interview_type,
+                        style=style,
+                        stage="opening",
+                        status="matched" if rag_parts else "empty",
+                        jobs=jobs,
+                        questions=questions,
+                        scripts=scripts,
+                    )
+
+                    if rag_parts:
+                        result = "\n\n".join(rag_parts)
+                        print(f"[OK] RAG retrieval complete: {len(jobs)} jobs, {len(questions)} questions, {len(scripts)} scripts")
+                        return result
+                except Exception as e:
+                    print(f"[WARN] RAG retrieval failed, fallback to no-knowledge-base mode: {e}")
+                    rag_debug_details = _build_rag_debug_details(
+                        query=enriched_query if 'enriched_query' in locals() else "",
+                        job_title=job_title,
+                        difficulty=difficulty,
+                        interview_type=interview_type,
+                        style=style,
+                        stage="opening",
+                        status="error",
+                        error=str(e),
+                        jobs=jobs if 'jobs' in locals() else [],
+                        questions=questions if 'questions' in locals() else [],
+                        scripts=scripts if 'scripts' in locals() else [],
+                    )
+                return ""
 
             # 并行执行 LLM 摘要 + RAG 检索
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1539,23 +1255,7 @@ def setup_interview():
 
                 resume_summary, summary_steps = future_summary.result()
                 all_steps.extend(summary_steps)
-                rag_context, rag_debug_details = future_rag.result()
-
-            if not resume_summary and ocr_status == "success" and ocr_raw_text:
-                resume_summary = _build_resume_summary_fallback(ocr_raw_text)
-                if resume_summary:
-                    all_steps.append({
-                        "tool": "resume_summary_fallback",
-                        "tool_input": "基于简历原文的确定性摘要回退",
-                        "log": "并行摘要阶段无结果，回退到原文抽取摘要",
-                        "observation": resume_summary[:500],
-                    })
-
-            if explicit_resume_requested and has_resume and not resume_summary:
-                return jsonify({
-                    "status": "error",
-                    "message": "简历文本已提取，但未能生成有效摘要，请重新上传内容更完整的简历。",
-                }), 422
+                rag_context = future_rag.result()
 
             print(f"[OK] Parallel stage complete: summary {len(resume_summary)} chars, RAG {len(rag_context)} chars")
 
@@ -1565,7 +1265,7 @@ def setup_interview():
                 generated_prompt = ""
                 try:
                     generated_prompt = _try_generate_prompt(
-                        job_title, interview_type, difficulty, style, resume_summary, job_requirements
+                        job_title, interview_type, difficulty, style, resume_summary
                     )
                     if generated_prompt:
                         prompt_source = "prompt_generator"
@@ -1580,7 +1280,6 @@ def setup_interview():
                     feature_vad=feature_vad,
                     feature_deep=feature_deep,
                     resume_summary=resume_summary,
-                    job_requirements=job_requirements,
                     custom_prompt=generated_prompt,
                     rag_context=rag_context
                 )
@@ -1634,7 +1333,7 @@ def setup_interview():
                 "system_message": f"[OK] Interview room created (ID: {session_id[:8]})",
                 "parse_result": parse_result_text,
                 "ai_response": response,
-                "ocr_text": ocr_reusable_text if ocr_status == "success" else "",
+                "ocr_text": ocr_raw_text if ocr_status == "success" else "",
                 "debug_info": debug_info
             })
         else:
@@ -1654,8 +1353,7 @@ def setup_interview():
                 "token": token,
                 "system_message": "[Mock 模式] 未检测到 Agent，使用模拟逻辑",
                 "parse_result": parse_result_mock,
-                "ai_response": ai_resp,
-                "ocr_text": ocr_reusable_text if ocr_status == "success" else "",
+                "ai_response": ai_resp
             })
     except Exception as e:
         traceback.print_exc()
@@ -1673,85 +1371,82 @@ def setup_interview_stream():
     feature_deep = request.form.get('feature_deep', 'true') == 'true'
     model_provider = request.form.get('model_provider', '')
     resume_ocr_text = request.form.get('resume_ocr_text', '')
-    job_requirements = request.form.get('job_requirements', '').strip()
-    file_path = ""
-    filename = ""
-    explicit_resume_requested = False
-    prepared_resume = None
-
-    current_user_id = _get_current_user_id_from_auth_header()
-
-    if 'resume' in request.files:
-        file = request.files['resume']
-        if file.filename != '':
-            explicit_resume_requested = True
-            try:
-                filename, file_path = _save_uploaded_resume(file)
-                prepared_resume = _extract_resume_payload(file_path)
-                if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
-                    _cleanup_local_resume_file(file_path)
-                    return jsonify({"status": "error", "message": message}), 400
-            except ResumeOcrUnavailableError as exc:
-                _cleanup_local_resume_file(file_path)
-                return jsonify({"status": "error", "message": str(exc)}), 503
-            except ResumeExtractionError as exc:
-                _cleanup_local_resume_file(file_path)
-                return jsonify({"status": "error", "message": str(exc)}), 400
-    elif resume_ocr_text:
-        explicit_resume_requested = True
-        prepared_resume = _build_reused_resume_payload(resume_ocr_text, source_label="历史简历")
-        if not prepared_resume["success"]:
-            return jsonify({"status": "error", "message": prepared_resume["error_message"]}), 400
 
     session_id = str(uuid.uuid4())
     token = create_token(session_id)
+
+    current_user_id = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and STORAGE_AVAILABLE and data_client:
+        user_info = data_client.get_user(auth_header[7:])
+        if user_info and "id" in user_info:
+            current_user_id = user_info["id"]
 
     if STORAGE_AVAILABLE:
         data_client.create_session(
             session_id=session_id, candidate_name="求职者",
             position=job_title, interview_style=style,
-            metadata={
-                "type": interview_type,
-                "diff": difficulty,
-                "vad": feature_vad,
-                "deep": feature_deep,
-                "job_requirements": job_requirements,
-            },
+            metadata={"type": interview_type, "diff": difficulty, "vad": feature_vad, "deep": feature_deep},
             user_id=current_user_id,
         )
 
     agent = get_agent(session_id, model_provider=model_provider)
 
+    # 文件处理必须在 generator 外完成（generator 内 request context 不可用）
+    has_resume = False
+    file_path = ""
+    filename = ""
+
+    if 'resume' in request.files:
+        file = request.files['resume']
+        if file.filename != '':
+            has_resume = True
+            raw_name = file.filename
+            ext = os.path.splitext(raw_name)[-1].lower()
+            if ext not in ('.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.heic', '.heif'):
+                ext = '.pdf'
+            filename = f"{uuid.uuid4().hex}{ext}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+
     def generate():
-        nonlocal file_path, filename, prepared_resume
+        nonlocal has_resume, file_path, filename
         try:
             resume_summary = ""
             ocr_raw_text = ""
-            ocr_reusable_text = ""
             ocr_status = "not_called"
             prompt_source = "static"
             all_steps = []
-            has_resume = bool(prepared_resume)
 
-            # 阶段 1：加载简历
-            if prepared_resume:
-                if file_path:
-                    yield _sse_event("stage", {"stage": "正在解析简历..."})
-                else:
-                    yield _sse_event("stage", {"stage": "正在加载已保存简历..."})
-
-                ocr_raw_text = prepared_resume["text"]
-                ocr_reusable_text = prepared_resume["reusable_text"]
-                ocr_status = "success"
-                all_steps.append({
-                    "tool": "resume_reuse" if prepared_resume["mode"] == "reused_text" else ("perform_ocr" if prepared_resume["mode"] == "ocr" else "extract_resume_text"),
-                    "tool_input": file_path or "历史简历文本",
-                    "log": "自动选择 OCR、直接文本提取或复用已保存简历内容",
-                    "observation": (ocr_reusable_text or prepared_resume["error_message"])[:2000],
+            if not agent:
+                # Mock 模式
+                import time
+                time.sleep(1)
+                ai_resp = f"你好，我是今天的AI面试官。我已经了解了你应聘【{job_title}】的意向。准备好的话，请先做一个简单的自我介绍吧。"
+                yield _sse_event("done", {
+                    "status": "success", "token": token,
+                    "system_message": "[Mock 模式]", "parse_result": "",
+                    "ai_response": ai_resp, "ocr_text": "",
+                    "debug_info": {}
                 })
+                return
 
-                if file_path and STORAGE_AVAILABLE:
+            # 阶段 1：OCR
+            if has_resume and file_path:
+                yield _sse_event("stage", {"stage": "正在解析简历..."})
+                if OCR_AVAILABLE:
+                    try:
+                        ocr_result = perform_ocr(image_path=file_path, use_preprocessing=True)
+                        ocr_raw_text = ocr_result
+                        ocr_status = "success" if "解析成功" in ocr_result else "error"
+                    except Exception as ocr_err:
+                        ocr_status = "error"
+                        ocr_raw_text = f"OCR 调用异常: {str(ocr_err)}"
+                else:
+                    ocr_status = "unavailable"
+                    ocr_raw_text = "OCR 模块未加载"
+
+                if STORAGE_AVAILABLE:
                     stored_path = file_path
                     upload_result = data_client.upload_resume_file(session_id, file_path)
                     if upload_result and upload_result.get("file_path"):
@@ -1760,51 +1455,24 @@ def setup_interview_stream():
                         session_id,
                         filename,
                         stored_path,
-                        normalize_reusable_ocr_result(ocr_reusable_text),
+                        normalize_reusable_ocr_result(ocr_raw_text if ocr_status == "success" else ""),
                         user_id=current_user_id,
                     )
+
+            elif resume_ocr_text:
+                has_resume = True
+                ocr_raw_text = resume_ocr_text
+                ocr_status = "success"
             else:
                 if STORAGE_AVAILABLE and data_client and current_user_id:
                     try:
                         latest_resume = data_client.get_latest_resume(user_id=current_user_id)
-                        reused_resume = (
-                            _build_reused_resume_payload(
-                                latest_resume.get("ocr_result"),
-                                source_label="历史简历",
-                            )
-                            if latest_resume else None
-                        )
-                        if reused_resume and reused_resume["success"]:
+                        if latest_resume and is_reusable_ocr_result(latest_resume.get("ocr_result")):
                             has_resume = True
-                            ocr_raw_text = reused_resume["text"]
-                            ocr_reusable_text = reused_resume["reusable_text"]
+                            ocr_raw_text = latest_resume["ocr_result"]
                             ocr_status = "success"
-                            all_steps.append({
-                                "tool": "resume_auto_load",
-                                "tool_input": f"user_id={current_user_id}",
-                                "log": "自动加载用户最近一次简历 OCR",
-                                "observation": ocr_reusable_text[:500],
-                            })
                     except Exception:
                         pass
-
-            if not agent:
-                import time
-                time.sleep(1)
-                ai_resp = f"你好，我是今天的AI面试官。我已经了解了你应聘【{job_title}】的意向。"
-                parse_result_text = ""
-                if has_resume:
-                    ai_resp += "我已经看过你的简历，准备好的话，请先结合你的经历做一个简单的自我介绍吧。"
-                    parse_result_text = "[OK] Resume parsed successfully, interviewer has locked real project details. Please introduce yourself first."
-                else:
-                    ai_resp += "准备好的话，请先做一个简单的自我介绍吧。"
-                yield _sse_event("done", {
-                    "status": "success", "token": token,
-                    "system_message": "[Mock 模式]", "parse_result": parse_result_text,
-                    "ai_response": ai_resp, "ocr_text": ocr_reusable_text if ocr_status == "success" else "",
-                    "debug_info": {}
-                })
-                return
 
             # 阶段 2：LLM 摘要（流式输出思考过程）
             rag_context = ""
@@ -1817,9 +1485,10 @@ def setup_interview_stream():
                 stage="opening",
                 status="not_started",
             )
-            if ocr_status == "success" and ocr_raw_text:
+            if ocr_status == "success" and ocr_raw_text and agent:
                 yield _sse_event("stage", {"stage": "AI 正在分析简历..."})
                 q = f"请用简洁的中文总结以下简历的核心信息（姓名、技能、项目经历、教育背景），不要遗漏关键细节：\n\n{ocr_raw_text[:6000]}"
+                # 流式获取摘要
                 if hasattr(agent, 'llm_client') and agent.llm_client:
                     messages = [{"role": "user", "content": q}]
                     for chunk in agent.llm_client.generate_stream(messages):
@@ -1829,92 +1498,165 @@ def setup_interview_stream():
                     resume_summary, steps = agent.run(q)
                     all_steps.extend(steps)
 
-                if not resume_summary.strip():
-                    fallback_summary = _build_resume_summary_fallback(ocr_raw_text)
-                    if fallback_summary:
-                        resume_summary = fallback_summary
-                        all_steps.append({
-                            "tool": "resume_summary_fallback",
-                            "tool_input": "基于简历原文的确定性摘要回退",
-                            "log": "流式摘要为空，回退到原文抽取摘要",
-                            "observation": fallback_summary[:500],
-                        })
-
+                # RAG 检索（并行，不阻塞流式输出）
                 yield _sse_event("stage", {"stage": "正在检索知识库..."})
-                rag_context, rag_debug_details = _retrieve_rag_context(
-                    job_title=job_title,
-                    difficulty=difficulty,
-                    interview_type=interview_type,
-                    style=style,
-                    resume_text=ocr_raw_text,
-                    stage="opening",
-                )
-
-            if explicit_resume_requested and has_resume and not resume_summary:
-                yield _sse_event("error", {
-                    "message": "简历文本已提取，但未能生成有效摘要，请重新上传内容更完整的简历。"
-                })
-                return
+                if STORAGE_AVAILABLE and data_client:
+                    try:
+                        rag_parts = []
+                        jobs = []
+                        questions = []
+                        scripts = []
+                        resume_keywords = ocr_raw_text[:300]
+                        enriched_query = f"{job_title} {resume_keywords}".strip()
+                        jobs = data_client.search_job_descriptions(
+                            job_title,
+                            top_k=1,
+                            difficulty=difficulty,
+                            interview_type=interview_type,
+                        )
+                        if jobs:
+                            j = jobs[0]
+                            meta = j.get("metadata", {})
+                            must_have = ", ".join(meta.get("must_have_skills") or [])
+                            tech_tags = ", ".join(meta.get("tech_tags") or []) or meta.get("tags", "")
+                            rag_parts.append(
+                                f"### 岗位画像\n"
+                                f"- 岗位：{meta.get('job_name', '') or meta.get('canonical_job_title', '')}\n"
+                                f"- 关键技能：{must_have}\n"
+                                f"- 技术标签：{tech_tags}\n"
+                                f"- 要求：{j.get('document', '')[:500]}"
+                            )
+                        questions = data_client.search_questions(
+                            enriched_query,
+                            job_filter=job_title,
+                            top_k=5,
+                            difficulty=difficulty,
+                            interview_type=interview_type,
+                            style=style,
+                            stage="core",
+                        )
+                        if questions:
+                            q_lines = []
+                            for idx, q in enumerate(questions, 1):
+                                meta = q.get("metadata", {})
+                                q_lines.append(f"{idx}. [{meta.get('dimension', '')}] {(q.get('document', '') or q.get('content', ''))[:200]}")
+                            rag_parts.append("### 推荐面试题\n" + "\n".join(q_lines))
+                        scripts = data_client.search_hr_scripts(
+                            f"{job_title} {style} 面试 开场 自我介绍",
+                            stage="开场",
+                            top_k=2,
+                            interview_type=interview_type,
+                            style=style,
+                        )
+                        if scripts:
+                            s_lines = [
+                                f"- [{s.get('metadata', {}).get('stage', '')}] {(s.get('document', '') or s.get('content', ''))[:200]}"
+                                for s in scripts
+                            ]
+                            rag_parts.append("### 参考话术\n" + "\n".join(s_lines))
+                        rag_debug_details = _build_rag_debug_details(
+                            query=enriched_query,
+                            job_title=job_title,
+                            difficulty=difficulty,
+                            interview_type=interview_type,
+                            style=style,
+                            stage="opening",
+                            status="matched" if rag_parts else "empty",
+                            jobs=jobs,
+                            questions=questions,
+                            scripts=scripts,
+                        )
+                        if rag_parts:
+                            rag_context = "\n\n".join(rag_parts)
+                    except Exception as e:
+                        print(f"[WARN] RAG retrieval failed (stream), fallback to no-knowledge-base mode: {e}")
+                        rag_debug_details = _build_rag_debug_details(
+                            query=enriched_query if 'enriched_query' in locals() else "",
+                            job_title=job_title,
+                            difficulty=difficulty,
+                            interview_type=interview_type,
+                            style=style,
+                            stage="opening",
+                            status="error",
+                            error=str(e),
+                            jobs=jobs if 'jobs' in locals() else [],
+                            questions=questions if 'questions' in locals() else [],
+                            scripts=scripts if 'scripts' in locals() else [],
+                        )
 
             # 阶段 3：注入 prompt + 开场白
-            if hasattr(agent, 'update_dynamic_prompt'):
-                generated_prompt = ""
-                try:
-                    generated_prompt = _try_generate_prompt(
-                        job_title, interview_type, difficulty, style, resume_summary, job_requirements
+            if agent:
+                if hasattr(agent, 'update_dynamic_prompt'):
+                    generated_prompt = ""
+                    try:
+                        generated_prompt = _try_generate_prompt(job_title, interview_type, difficulty, style, resume_summary)
+                        if generated_prompt:
+                            prompt_source = "prompt_generator"
+                    except Exception:
+                        pass
+                    agent.update_dynamic_prompt(
+                        job_title=job_title, interview_type=interview_type,
+                        difficulty=difficulty, style=style,
+                        feature_vad=feature_vad, feature_deep=feature_deep,
+                        resume_summary=resume_summary, custom_prompt=generated_prompt,
+                        rag_context=rag_context
                     )
-                    if generated_prompt:
-                        prompt_source = "prompt_generator"
-                except Exception:
-                    pass
-                agent.update_dynamic_prompt(
-                    job_title=job_title, interview_type=interview_type,
-                    difficulty=difficulty, style=style,
-                    feature_vad=feature_vad, feature_deep=feature_deep,
-                    resume_summary=resume_summary, job_requirements=job_requirements,
-                    custom_prompt=generated_prompt,
-                    rag_context=rag_context
-                )
-            else:
-                agent.update_system_prompt(style=style)
-            agent.reset_memory()
+                else:
+                    agent.update_system_prompt(style=style)
+                agent.reset_memory()
 
-            yield _sse_event("stage", {"stage": "AI 面试官正在准备开场白..."})
-            if has_resume:
-                setup_query = f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后**明确要求候选人做 2-3 分钟的自我介绍**。切记：绝对不要自己编造任何经历！"
-                parse_result_text = "[OK] Resume parsed successfully, interviewer has locked real project details. Please introduce yourself first."
-            else:
-                setup_query = f"我应聘的岗位是【{job_title}】。我没有提供简历。请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
-                parse_result_text = "No resume provided"
+                yield _sse_event("stage", {"stage": "AI 面试官正在准备开场白..."})
+                if has_resume:
+                    setup_query = f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后**明确要求候选人做 2-3 分钟的自我介绍**。切记：绝对不要自己编造任何经历！"
+                    parse_result_text = "[OK] Resume parsed successfully, interviewer has locked real project details. Please introduce yourself first."
+                else:
+                    setup_query = f"我应聘的岗位是【{job_title}】。我没有提供简历。请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
+                    parse_result_text = "No resume provided"
 
-            response, steps = agent.run(setup_query)
-            all_steps.extend(steps)
-            if _has_self_intro_request(response):
-                print(f"[OK] Verification passed (stream): AI requires candidate self-introduction")
-            else:
-                print(f"[FAIL] Verification failed (stream): AI did not require self-introduction")
-                print(f"[AI] AI response: {response[:200]}")
+                # Stream getting opening statement
+                response = ""
+                if hasattr(agent, 'llm_client') and agent.llm_client:
+                    # Need to use agent's run to maintain memory, but we can get full response first
+                    response, steps = agent.run(setup_query)
+                    all_steps.extend(steps)
+                    
+                    # [CHECK] Verify: Check if AI's first sentence includes self-introduction request
+                    if _has_self_intro_request(response):
+                        print(f"[OK] Verification passed (stream): AI requires candidate self-introduction")
+                    else:
+                        print(f"[FAIL] Verification failed (stream): AI did not require self-introduction")
+                        print(f"[AI] AI response: {response[:200]}")
+                else:
+                    response, steps = agent.run(setup_query)
+                    all_steps.extend(steps)
+                    
+                    # [CHECK] Verify: Check if AI's first sentence includes self-introduction request
+                    if _has_self_intro_request(response):
+                        print(f"[OK] Verification passed (stream): AI requires candidate self-introduction")
+                    else:
+                        print(f"[FAIL] Verification failed (stream): AI did not require self-introduction")
+                        print(f"[AI] AI response: {response[:200]}")
 
-            if STORAGE_AVAILABLE:
-                data_client.save_message(session_id, "assistant", response)
+                if STORAGE_AVAILABLE:
+                    data_client.save_message(session_id, "assistant", response)
 
-            debug_info = _build_debug_info(agent, session_id)
-            debug_info["intermediate_steps"] = all_steps
-            debug_info["prompt_source"] = prompt_source
-            debug_info["resume_summary"] = resume_summary[:2000]
-            debug_info["ocr_raw_text"] = ocr_raw_text
-            debug_info["ocr_status"] = ocr_status
-            debug_info["rag_context"] = rag_context[:1000]
-            debug_info["rag_details"] = rag_debug_details
+                debug_info = _build_debug_info(agent, session_id)
+                debug_info["intermediate_steps"] = all_steps
+                debug_info["prompt_source"] = prompt_source
+                debug_info["resume_summary"] = resume_summary[:2000]
+                debug_info["ocr_raw_text"] = ocr_raw_text
+                debug_info["ocr_status"] = ocr_status
+                debug_info["rag_context"] = rag_context[:1000]
+                debug_info["rag_details"] = rag_debug_details
 
-            yield _sse_event("done", {
-                "status": "success", "token": token,
-                "system_message": f"[OK] Interview room created (ID: {session_id[:8]})",
-                "parse_result": parse_result_text,
-                "ai_response": response,
-                "ocr_text": ocr_reusable_text if ocr_status == "success" else "",
-                "debug_info": debug_info
-            })
+                yield _sse_event("done", {
+                    "status": "success", "token": token,
+                    "system_message": f"[OK] Interview room created (ID: {session_id[:8]})",
+                    "parse_result": parse_result_text,
+                    "ai_response": response,
+                    "ocr_text": ocr_raw_text if ocr_status == "success" else "",
+                    "debug_info": debug_info
+                })
         except Exception as e:
             traceback.print_exc()
             yield _sse_event("error", {"message": str(e)})
@@ -1927,10 +1669,8 @@ def setup_interview_stream():
 @require_session
 def end_interview_stream(session_id):
     """流式结束面试：通过 SSE 实时输出评估思考过程。"""
-    save_history = _parse_save_history_payload(default=True)
     agent = _agents.get(session_id)
     observer = None
-    session_owner_id = _resolve_session_owner_id(session_id)
 
     # 创建 SSE 消息队列
     sse_queue = queue.Queue()
@@ -1959,10 +1699,7 @@ def end_interview_stream(session_id):
 
     # 取出观察者草稿，清理 observer
     observer = observer
-    draft = observer.shutdown(
-        wait=save_history,
-        timeout=EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS if save_history else None,
-    ) if observer else {}
+    draft = observer.shutdown(wait=True, timeout=EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS) if observer else {}
     
     if False and observer:
         # [NEW] Set SSE push callback
@@ -1975,31 +1712,6 @@ def end_interview_stream(session_id):
 
     def generate():
         eval_result = {}
-        if not save_history:
-            yield _sse_event("stage", {"stage": "正在结束本次面试..."})
-
-            if STORAGE_AVAILABLE:
-                deleted = False
-                if session_owner_id is not None:
-                    deleted = data_client.delete_session(session_id, session_owner_id)
-                if not deleted:
-                    data_client.end_session(session_id)
-
-            _agents.pop(session_id, None)
-            revoke_session(session_id)
-
-            payload = {
-                "status": "success",
-                "saved": False,
-                "report_available": False,
-                "message": "本次面试未保存，评估报告不会生成。",
-            }
-            if session_owner_id is not None:
-                payload["quota"] = _build_history_quota(session_owner_id)
-
-            yield _sse_event("done", payload)
-            return
-
         if agent:
             try:
                 yield _sse_event("stage", {"stage": "AI 面试官正在撰写评估报告..."})
@@ -2047,13 +1759,10 @@ def end_interview_stream(session_id):
 
         yield _sse_event("done", {
             "status": "success",
-            "saved": True,
-            "report_available": True,
             "stats": stats,
             "strengths": eval_result.get("strengths", ""),
             "weaknesses": eval_result.get("weaknesses", ""),
             "summary": eval_result.get("summary", ""),
-            "quota": _build_history_quota(session_owner_id) if session_owner_id is not None else None,
         })
 
     return Response(generate(), mimetype='text/event-stream',
@@ -2279,41 +1988,15 @@ def chat_stream(session_id):
 @require_session
 def end_interview(session_id):
     """结束面试"""
-    save_history = _parse_save_history_payload(default=True)
     agent = _agents.get(session_id)
     eval_result = {}
-    session_owner_id = _resolve_session_owner_id(session_id)
 
     # 取出观察者草稿，清理 observer
     observer = _observers.pop(session_id, None)
     draft = (
-        observer.shutdown(
-            wait=save_history,
-            timeout=EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS if save_history else None,
-        )
+        observer.shutdown(wait=True, timeout=EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS)
         if observer else {}
     )
-
-    if not save_history:
-        if STORAGE_AVAILABLE:
-            deleted = False
-            if session_owner_id is not None:
-                deleted = data_client.delete_session(session_id, session_owner_id)
-            if not deleted:
-                data_client.end_session(session_id)
-
-        _agents.pop(session_id, None)
-        revoke_session(session_id)
-
-        payload = {
-            "status": "success",
-            "saved": False,
-            "report_available": False,
-            "message": "本次面试未保存，评估报告不会生成。",
-        }
-        if session_owner_id is not None:
-            payload["quota"] = _build_history_quota(session_owner_id)
-        return jsonify(payload)
 
     # 调用 AI 生成真实评估（注入草稿）
     if agent:
@@ -2361,21 +2044,16 @@ def end_interview(session_id):
         _agents.pop(session_id, None)
         return jsonify({
             "status": "success",
-            "saved": True,
-            "report_available": True,
             "stats": stats,
             "strengths": eval_result.get("strengths", ""),
             "weaknesses": eval_result.get("weaknesses", ""),
             "summary": eval_result.get("summary", ""),
-            "quota": _build_history_quota(session_owner_id) if session_owner_id is not None else None,
         })
 
     _agents.pop(session_id, None)
     revoke_session(session_id)
     return jsonify({
         "status": "success",
-        "saved": True,
-        "report_available": bool(eval_result),
         "message": "会话已结束",
         "strengths": eval_result.get("strengths", ""),
         "weaknesses": eval_result.get("weaknesses", ""),
@@ -2441,8 +2119,8 @@ def _merge_job_title_with_report_context(job_title: str, report_context: dict | 
 def analyze_resume_stream():
     """流式简历分析：通过 SSE 实时输出 LLM 思考过程。
     支持两种模式：
-    1. FormData 上传文件 → 自动提取文本（OCR / 直读）+ 流式分析
-    2. JSON body { ocr_text, job_title } → 跳过文件解析，直接流式分析
+    1. FormData 上传文件 → OCR + 流式分析
+    2. JSON body { ocr_text, job_title } → 跳过 OCR，流式分析
     """
     if not ANALYZER_AVAILABLE:
         return jsonify({"status": "error", "message": "简历分析模块不可用"}), 503
@@ -2457,6 +2135,8 @@ def analyze_resume_stream():
             return jsonify({"status": "error", "message": "ocr_text 不能为空"}), 400
         ocr_images = {}
     else:
+        if not OCR_AVAILABLE:
+            return jsonify({"status": "error", "message": "OCR 模块不可用"}), 503
         if 'resume' not in request.files:
             return jsonify({"status": "error", "message": "请上传简历文件"}), 400
         file = request.files['resume']
@@ -2464,17 +2144,20 @@ def analyze_resume_stream():
             return jsonify({"status": "error", "message": "文件名为空"}), 400
         job_title = request.form.get('job_title', '')
         report_context = _parse_report_context(request.form.get('report_context'))
+        raw_name = file.filename
+        ext = os.path.splitext(raw_name)[-1].lower()
+        if ext not in ('.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.heic', '.heif'):
+            ext = '.pdf'
+        filename = f"{uuid.uuid4().hex}{ext}"
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(file_path)
+        # OCR 阶段（同步，非流式）
         try:
-            _, file_path = _save_uploaded_resume(file)
-            extraction = _extract_resume_payload(file_path, include_images=True)
-            ocr_text = extraction["text"] if extraction["success"] else extraction["error_message"]
-            ocr_images = extraction["images"]
-            if not extraction["success"]:
-                return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
-        except ResumeOcrUnavailableError as exc:
-            return jsonify({"status": "error", "message": str(exc)}), 503
-        except ResumeExtractionError as exc:
-            return jsonify({"status": "error", "message": str(exc)}), 400
+            ocr_full = perform_ocr_full(image_path=file_path, use_preprocessing=True)
+            ocr_text = ocr_full["text"]
+            ocr_images = ocr_full["images"]
+            if "错误" in ocr_text and "解析成功" not in ocr_text:
+                return jsonify({"status": "error", "message": f"OCR 解析失败: {ocr_text}"}), 500
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -2484,7 +2167,7 @@ def analyze_resume_stream():
 
     def generate():
         try:
-            yield _sse_event("stage", {"stage": "简历解析完成，开始 AI 分析..."})
+            yield _sse_event("stage", {"stage": "OCR 完成，开始 AI 分析..."})
             # 把 OCR 原文摘要发给前端，让用户看到输入大模型的文字
             ocr_preview = ocr_text[:800] + ("..." if len(ocr_text) > 800 else "")
             yield _sse_event("thinking", {"chunk": f"[DOC] Resume original text (input to LLM):\n{ocr_preview}\n\n---\n\n"})
@@ -2540,10 +2223,10 @@ _resume_sessions: dict[str, dict] = {}
 
 @app.route('/api/resume/analyze', methods=['POST'])
 def analyze_resume():
-    """上传简历，提取文本并执行 DeepSeek 分析，返回结构化建议。
+    """上传简历，执行 OCR + DeepSeek 分析，返回结构化建议。
     支持两种模式：
-    1. FormData 上传文件 → 自动提取文本（OCR / 直读）+ 分析
-    2. JSON body { ocr_text, job_title } → 跳过文件解析，直接分析（复用面试 OCR 结果）
+    1. FormData 上传文件 → OCR + 分析
+    2. JSON body { ocr_text, job_title } → 跳过 OCR，直接分析（复用面试 OCR 结果）
     """
     if not ANALYZER_AVAILABLE:
         return jsonify({"status": "error", "message": "简历分析模块不可用"}), 503
@@ -2586,7 +2269,10 @@ def analyze_resume():
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
-    # 模式 1：FormData 上传文件 → 自动提取文本 + 分析
+    # 模式 1：FormData 上传文件 → OCR + 分析
+    if not OCR_AVAILABLE:
+        return jsonify({"status": "error", "message": "OCR 模块不可用"}), 503
+
     # 接收文件
     if 'resume' not in request.files:
         return jsonify({"status": "error", "message": "请上传简历文件"}), 400
@@ -2596,15 +2282,22 @@ def analyze_resume():
 
     job_title = request.form.get('job_title', '')
     report_context = _parse_report_context(request.form.get('report_context'))
-    try:
-        # 1. 提取简历文本（OCR / 直读自动选择）
-        _, file_path = _save_uploaded_resume(file)
-        extraction = _extract_resume_payload(file_path, include_images=True)
-        ocr_result = extraction["text"] if extraction["success"] else extraction["error_message"]
-        ocr_images = extraction["images"]
+    raw_name = file.filename
+    ext = os.path.splitext(raw_name)[-1].lower()
+    if ext not in ('.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.heic', '.heif'):
+        ext = '.pdf'
+    filename = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(file_path)
 
-        if not extraction["success"]:
-            return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
+    try:
+        # 1. OCR 解析（含图片提取）
+        ocr_full = perform_ocr_full(image_path=file_path, use_preprocessing=True)
+        ocr_result = ocr_full["text"]
+        ocr_images = ocr_full["images"]  # filename -> data:image/...;base64,...
+
+        if "错误" in ocr_result and "解析成功" not in ocr_result:
+            return jsonify({"status": "error", "message": f"OCR 解析失败: {ocr_result}"}), 500
 
         # 2. DeepSeek 分析
         analyzer = ResumeAnalyzer(
@@ -2633,10 +2326,6 @@ def analyze_resume():
             "images": ocr_images
         })
 
-    except ResumeOcrUnavailableError as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 503
-    except ResumeExtractionError as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -2872,7 +2561,7 @@ def export_html_pdf():
 @app.route('/download/<filename>', methods=['GET'])
 def download_pdf(filename):
     """下载已生成的 PDF 文件"""
-    generated_dir = PDF_OUTPUT_DIR
+    generated_dir = os.path.join(os.path.dirname(__file__), 'temp', 'generated')
     file_path = os.path.join(generated_dir, filename)
     if not os.path.exists(file_path):
         return jsonify({"status": "error", "message": "文件不存在"}), 404
@@ -3036,11 +2725,6 @@ def _do_tts():
 
 
 if __name__ == '__main__':
-    server_host = _get_server_host()
-    server_port = _get_server_port()
-    debug_enabled = _should_enable_debug_mode()
-    _assert_server_bindable(server_host, server_port)
-    print(f"ProView API 服务监听地址: {_build_server_url(server_host, server_port)}")
-    print(f"ProView API 调试模式: {'ON' if debug_enabled else 'OFF'}")
+    print("🚀 ProView API 服务已启动: http://127.0.0.1:5000")
     # 禁用 reloader 避免与 Playwright 冲突
-    app.run(debug=debug_enabled, host=server_host, port=server_port, use_reloader=False, threaded=True)
+    app.run(debug=True, port=5000, use_reloader=False, threaded=True)

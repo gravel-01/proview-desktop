@@ -74,11 +74,8 @@ onMounted(loadHistory)
   <div class="fade-in min-h-full max-w-4xl mx-auto">
     <div class="mb-6">
       <h2 class="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">面试历史</h2>
-      <p class="mt-2 text-sm font-medium text-slate-500 dark:text-slate-400">仅保存的面试会出现在这里，历史记录和报告会一直保留，除非你主动删除。</p>
-      <p v-if="quota" class="mt-2 text-sm text-primary">
-        已保存 {{ quota.saved_count }} 条历史记录
-        <span v-if="quota.remaining != null">，剩余 {{ quota.remaining }} 条可用额度</span>
-      </p>
+      <p class="mt-2 text-sm font-medium text-slate-500 dark:text-slate-400">仅保存的面试会出现在这里，你最多可保留 15 条历史记录。</p>
+      <p v-if="quota" class="mt-2 text-sm text-primary">已保存 {{ quota.saved_count }}/{{ quota.max_saved }}，剩余 {{ quota.remaining }} 条可用额度</p>
     </div>
 
     <div v-if="loading" class="py-20 text-center text-slate-400 dark:text-white/40">加载中...</div>
@@ -129,7 +126,7 @@ onMounted(loadHistory)
 
         <button
           type="button"
-          class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-rose-200 text-rose-500 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-500/20 dark:hover:bg-rose-500/10"
+          class="ui-btn ui-btn-danger inline-flex h-10 w-10 shrink-0 items-center justify-center p-0 disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="deletingId === s.session_id"
           @click="handleDelete(s.session_id)"
         >
@@ -145,8 +142,11 @@ onMounted(loadHistory)
 
 .history-card {
   @apply rounded-2xl border p-4 transition-all;
-  background: rgba(255, 255, 255, 0.7);
-  border-color: rgb(226, 232, 240);
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(148, 163, 184, 0.28);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.08);
 }
 
 .history-card:hover {

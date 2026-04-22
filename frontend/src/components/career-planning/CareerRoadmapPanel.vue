@@ -10,16 +10,16 @@ function getStatusConfig(status: string) {
   if (status === 'completed') {
     return {
       icon: CheckCircle2,
-      color: 'text-emerald-600 dark:text-emerald-400',
-      bg: 'bg-emerald-100 dark:bg-emerald-500/20',
-      border: 'border-emerald-200 dark:border-emerald-500/30',
+      color: 'text-blue-700 dark:text-blue-300',
+      bg: 'bg-sky-100 dark:bg-blue-500/20',
+      border: 'border-blue-200 dark:border-blue-500/30',
     }
   } else if (status === 'in_progress') {
     return {
       icon: Clock,
-      color: 'text-amber-600 dark:text-amber-400',
-      bg: 'bg-amber-100 dark:bg-amber-500/20',
-      border: 'border-amber-200 dark:border-amber-500/30',
+      color: 'text-sky-700 dark:text-sky-300',
+      bg: 'bg-sky-100 dark:bg-sky-500/20',
+      border: 'border-sky-200 dark:border-sky-500/30',
     }
   }
   return {
@@ -31,12 +31,12 @@ function getStatusConfig(status: string) {
 }
 
 const gradients = [
-  'from-indigo-500 to-purple-600',
-  'from-purple-500 to-pink-600',
-  'from-pink-500 to-rose-600',
-  'from-cyan-500 to-blue-600',
-  'from-emerald-500 to-teal-600',
-  'from-amber-500 to-orange-600',
+  'from-sky-400 to-blue-500',
+  'from-sky-500 to-blue-600',
+  'from-blue-400 to-blue-600',
+  'from-sky-400 to-blue-500',
+  'from-sky-500 to-blue-600',
+  'from-blue-400 to-blue-600',
 ]
 </script>
 
@@ -47,10 +47,10 @@ export default {
 </script>
 
 <template>
-  <section class="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-white/10 dark:bg-[#0C0F17]/90">
+  <section class="ui-card rounded-3xl p-5">
     <div class="flex items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-500 text-white shadow-lg shadow-indigo-500/30">
+        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100 to-blue-100 text-[#1e40af] shadow-[0_8px_24px_rgba(59,130,246,0.06)]">
           <Layers3 class="h-5 w-5" />
         </div>
         <div>
@@ -58,7 +58,7 @@ export default {
           <p class="text-sm text-slate-500 dark:text-slate-400">按里程碑推进，优先完成最关键的能力补齐和作品沉淀。</p>
         </div>
       </div>
-      <div class="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 dark:bg-white/5 dark:text-slate-300">
+      <div class="ui-card-soft flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300">
         {{ milestones.length }} 个阶段
       </div>
     </div>
@@ -66,7 +66,7 @@ export default {
     <!-- 时间轴容器 -->
     <div class="relative mt-6">
       <!-- 连接线 -->
-      <div class="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 bg-gradient-to-b from-indigo-500 via-purple-500 to-cyan-500 opacity-20 dark:opacity-30 md:hidden"></div>
+      <div class="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 bg-gradient-to-b from-sky-400 via-blue-500 to-blue-600 opacity-20 dark:opacity-30 md:hidden"></div>
       
       <!-- 桌面端：横向三列 -->
       <div class="hidden md:grid md:grid-cols-3 gap-4">
@@ -77,7 +77,7 @@ export default {
           :class="[
             getStatusConfig(milestone.status).border,
             milestone.status === 'completed' 
-              ? 'bg-gradient-to-br from-emerald-50/50 to-white dark:from-emerald-500/10 dark:to-[#0C0F17]' 
+              ? 'bg-gradient-to-br from-sky-50/40 to-white dark:from-blue-500/10 dark:to-[#0C0F17]' 
               : 'bg-white/80 dark:bg-[#0C0F17]/80'
           ]"
         >
@@ -90,21 +90,21 @@ export default {
               {{ index + 1 }}
             </span>
             <span 
-              class="rounded-full px-2.5 py-0.5 text-[10px] font-bold"
-              :class="getStatusConfig(milestone.status).bg"
+                class="ui-badge"
+                :class="milestone.status === 'completed' ? 'ui-badge-info' : milestone.status === 'in_progress' ? 'ui-badge-subtle' : 'ui-badge-subtle'"
             >
               {{ milestone.month_label }}
             </span>
           </div>
 
           <!-- 状态图标 -->
-          <div class="absolute -right-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-md dark:bg-[#0C0F17]" :class="getStatusConfig(milestone.status).color">
+          <div class="absolute -right-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-md dark:bg-[#0C0F17] dark:shadow-none" :class="getStatusConfig(milestone.status).color">
             <component :is="getStatusConfig(milestone.status).icon" class="h-4 w-4" />
           </div>
 
           <!-- 内容 -->
           <div class="pt-4">
-            <h3 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+            <h3 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-blue-700 dark:group-hover:text-blue-300 transition-colors">
               {{ milestone.title }}
             </h3>
             <p class="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
@@ -114,8 +114,8 @@ export default {
             <!-- 标签 -->
             <div class="mt-4 flex items-center justify-between">
               <span 
-                class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
-                :class="getStatusConfig(milestone.status).bg"
+                class="ui-badge"
+                :class="milestone.status === 'completed' ? 'ui-badge-info' : milestone.status === 'in_progress' ? 'ui-badge-subtle' : 'ui-badge-subtle'"
               >
                 {{ milestone.status === 'completed' ? '已完成' : milestone.status === 'in_progress' ? '进行中' : '待开始' }}
               </span>
@@ -127,7 +127,7 @@ export default {
 
       <!-- 移动端：垂直时间轴 -->
       <div class="relative md:hidden">
-        <div class="absolute left-5 top-0 h-full w-0.5 bg-gradient-to-b from-indigo-500 via-purple-500 to-cyan-500"></div>
+        <div class="absolute left-5 top-0 h-full w-0.5 bg-gradient-to-b from-sky-400 via-blue-500 to-blue-600"></div>
         
         <div class="space-y-4">
           <article
@@ -137,7 +137,7 @@ export default {
             :class="[
               getStatusConfig(milestone.status).border,
               milestone.status === 'completed' 
-                ? 'bg-gradient-to-br from-emerald-50/50 to-white dark:from-emerald-500/10 dark:to-[#0C0F17]' 
+                ? 'bg-gradient-to-br from-sky-50/40 to-white dark:from-blue-500/10 dark:to-[#0C0F17]' 
                 : 'bg-white/80 dark:bg-[#0C0F17]/80'
             ]"
           >
@@ -148,7 +148,7 @@ export default {
             <div class="ml-2 flex items-start justify-between gap-3">
               <div class="flex-1 pt-1">
                 <div class="flex items-center gap-2 mb-1">
-                  <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+                  <span class="ui-badge ui-badge-info">
                     {{ milestone.month_label }}
                   </span>
                 </div>

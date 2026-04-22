@@ -97,7 +97,7 @@ onMounted(async () => {
     />
     <!-- 顶部返回 -->
     <button @click="router.push('/history')"
-      class="inline-flex items-center gap-1.5 text-sm text-slate-500 dark:text-white/50 hover:text-primary transition-colors mb-4">
+      class="inline-flex items-center gap-1.5 text-sm text-slate-500 dark:text-white/50 hover:text-primary dark:hover:text-indigo-300 transition-colors mb-4">
       <ArrowLeft class="w-4 h-4" /> 返回历史列表
     </button>
 
@@ -112,23 +112,23 @@ onMounted(async () => {
             <span class="font-bold text-slate-800 dark:text-white/90">{{ detail.session.position || '未知岗位' }}</span>
           </div>
           <span v-if="detail.session.interview_style"
-            class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-white/60">
+            class="ui-badge ui-badge-subtle">
             {{ detail.session.interview_style }}
           </span>
           <span v-if="detail.session.metadata?.type && typeMap[detail.session.metadata.type]"
-            class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">
+            class="ui-badge ui-badge-info">
             {{ typeMap[detail.session.metadata.type] }}
           </span>
           <span v-if="detail.session.metadata?.diff && diffMap[detail.session.metadata.diff]"
-            class="px-2 py-0.5 rounded-full text-xs bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400">
+            class="ui-badge ui-badge-info">
             {{ diffMap[detail.session.metadata.diff] }}
           </span>
           <span v-if="detail.session.metadata?.vad"
-            class="px-2 py-0.5 rounded-full text-xs bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-400">
+            class="ui-badge ui-badge-info">
             语音检测
           </span>
           <span v-if="detail.session.metadata?.deep"
-            class="px-2 py-0.5 rounded-full text-xs bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
+            class="ui-badge ui-badge-subtle">
             深度追问
           </span>
           <div v-if="detail.session.start_time" class="flex items-center gap-1.5 text-sm text-slate-500 dark:text-white/50">
@@ -155,7 +155,7 @@ onMounted(async () => {
       <!-- 查看评估报告 -->
       <div v-if="detail.stats?.evaluations?.length" class="mb-6 text-center">
         <button @click="router.push(`/report/${route.params.sessionId}`)"
-          class="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium text-white bg-primary hover:bg-primary/90 transition-colors">
+          class="ui-btn ui-btn-primary px-6 py-2.5 text-sm font-medium">
           <FileBarChart class="w-4 h-4" /> 查看完整评估报告
         </button>
       </div>
@@ -169,7 +169,7 @@ onMounted(async () => {
       <!-- 再面一次 -->
       <div class="mt-8 text-center">
         <button @click="openRetryDialog" :disabled="retrying"
-          class="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium text-white bg-primary hover:bg-primary/90 transition-colors disabled:opacity-50">
+          class="ui-btn ui-btn-primary px-6 py-2.5 text-sm font-medium disabled:opacity-50">
           <RotateCcw class="w-4 h-4" :class="{ 'animate-spin': retrying }" />
           {{ retrying ? '启动面试中...' : '再面一次' }}
         </button>
@@ -192,8 +192,11 @@ onMounted(async () => {
 
 .meta-card {
   @apply p-4 rounded-2xl border;
-  background: rgba(255, 255, 255, 0.7);
-  border-color: rgb(226, 232, 240);
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(148, 163, 184, 0.28);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.08);
 }
 :where(.dark) .meta-card {
   background: #1A1A24;

@@ -22,10 +22,11 @@ const endError = ref('')
 
 const quotaText = computed(() => {
   const quota = store.historyQuota
-  if (!quota) return '正在读取已保存历史...'
-  if (quota.max_saved == null) return `已保存 ${quota.saved_count} 条历史记录`
+  if (!quota) return '历史额度加载中'
   return `已保存 ${quota.saved_count}/${quota.max_saved}`
 })
+
+const canSaveHistory = computed(() => store.historyQuota?.can_save !== false)
 
 onMounted(async () => {
   if (store.shouldRedirectInterviewToReport) {
@@ -77,6 +78,8 @@ function closeEndDialog() {
 }
 
 async function confirmEnd(saveHistory: boolean) {
+  if (saveHistory && !canSaveHistory.value) return
+
   ending.value = true
   endingChoice.value = saveHistory ? 'save' : 'discard'
   endError.value = ''
@@ -113,41 +116,44 @@ async function confirmEnd(saveHistory: boolean) {
     <ChatPanel ref="chatPanel" />
 
     <div v-if="showEndDialog" class="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/45 px-4">
-      <div class="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-white/10 dark:bg-[#11131c]">
+      <div class="ui-card w-full max-w-lg rounded-3xl p-6 shadow-2xl dark:shadow-black/50">
         <h3 class="text-xl font-bold text-slate-900 dark:text-white">结束面试</h3>
         <p class="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
           你可以选择保存本次面试历史，保存后才会生成评估报告；如果不保存，本次对话和报告都会被释放，不占用数据库空间。
         </p>
 
-        <div class="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
+        <div class="ui-card-soft mt-4 rounded-2xl px-4 py-3 text-sm text-slate-600 dark:text-slate-300">
           <span v-if="quotaLoading">正在加载历史额度...</span>
           <span v-else>{{ quotaText }}</span>
-          <span v-if="store.historyQuota?.remaining != null" class="ml-2 text-slate-400 dark:text-slate-500">
+          <span v-if="store.historyQuota" class="ml-2 text-slate-400 dark:text-slate-500">
             剩余 {{ store.historyQuota.remaining }} 条
           </span>
         </div>
 
+        <p v-if="!quotaLoading && !canSaveHistory" class="mt-3 text-sm text-rose-500">
+          你的面试历史已满 15 条，请先去历史页面删除旧记录，再保存新的面试。
+        </p>
         <p v-if="endError" class="mt-3 text-sm text-rose-500">{{ endError }}</p>
 
         <div class="mt-6 flex flex-col gap-3 sm:flex-row">
           <button
             type="button"
-            class="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
+            class="ui-btn ui-btn-secondary flex-1 rounded-2xl px-4 py-3 text-sm font-medium"
             @click="closeEndDialog"
           >
             继续面试
           </button>
           <button
             type="button"
-            class="flex-1 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
+            class="ui-btn ui-btn-danger flex-1 rounded-2xl px-4 py-3 text-sm font-medium"
             @click="confirmEnd(false)"
           >
             不保存，直接结束
           </button>
           <button
             type="button"
-            class="flex-1 rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="quotaLoading"
+            class="ui-btn ui-btn-primary flex-1 rounded-2xl px-4 py-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="quotaLoading || !canSaveHistory"
             @click="confirmEnd(true)"
           >
             保存并生成报告
