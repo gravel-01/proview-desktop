@@ -343,7 +343,7 @@ function resetQuestionnaire() {
             <div v-if="!store.formData.skills.length" class="empty-state">
               暂未补充技能关键词。
             </div>
-            <div v-for="(skill, index) in store.formData.skills" :key="`${skill.name}-${index}`" class="grid gap-3 pt-3 first:pt-0 sm:grid-cols-[1fr_140px_auto]">
+            <div v-for="(skill, index) in store.formData.skills" :key="index" class="grid gap-3 pt-3 first:pt-0 sm:grid-cols-[1fr_140px_auto]">
               <input v-model="skill.name" type="text" class="field-input" placeholder="如：Vue 3 / Python / 增长分析" />
               <select v-model="skill.level" class="field-input">
                 <option value="了解">了解</option>
@@ -415,7 +415,7 @@ function resetQuestionnaire() {
           <FilePlus2 class="h-4 w-4" />
         </div>
         <div class="min-w-0">
-          <p class="truncate text-sm font-semibold text-slate-800 dark:text-white">问卷不会替代原简历内容，只会影响优化偏好。</p>
+          <p class="truncate text-sm font-semibold text-slate-800 dark:text-white">问卷中的结构化字段（如学校/专业/技能）会用于覆盖更新，其他内容作为偏好参考。</p>
           <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">
             你可以继续使用上方主按钮，也可以直接用下面这个快捷入口开始优化。
           </p>

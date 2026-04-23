@@ -252,35 +252,133 @@ export const useResumeStore = defineStore('resume', () => {
   }
 
   function acceptSuggestion(suggestionId: string) {
-    const sug = suggestions.value.find(s => s.suggestionId === suggestionId)
+    const sugIndex = suggestions.value.findIndex(s => s.suggestionId === suggestionId)
+    if (sugIndex === -1) return
+
+    const sug = suggestions.value[sugIndex]
     if (!sug) return
-    sug.status = 'ACCEPTED'
-    // 替换 section 中的内容
-    const sec = sections.value.find(s => s.id === sug.targetBlockId)
-    if (sec) {
-      sec.content = sec.content.replace(sug.originalText, sug.suggestedText)
-      // 同步到 builderDocument
-      syncSuggestionToBuilder(sug, sec)
+
+    const secIndex = sections.value.findIndex(s => s.id === sug.targetBlockId)
+    if (secIndex === -1) {
+      suggestions.value = suggestions.value.map((item, index) =>
+        index === sugIndex ? { ...item, status: 'ACCEPTED' } : item,
+      )
+      return
+    }
+
+    const sec = sections.value[secIndex]
+    if (!sec) return
+
+    const nextSectionContent = applySuggestionToText(sec.content, sug)
+
+    // Use immutable updates to ensure all preview branches re-render immediately.
+    sections.value = sections.value.map((item, index) =>
+      index === secIndex ? { ...item, content: nextSectionContent } : item,
+    )
+    suggestions.value = suggestions.value.map((item, index) =>
+      index === sugIndex ? { ...item, status: 'ACCEPTED' } : item,
+    )
+
+    syncSuggestionToBuilder(sug, { ...sec, content: nextSectionContent })
+  }
+
+  function applySuggestionToText(content: string, sug: ResumeSuggestion): string {
+    return replaceAllLiteral(content, sug.originalText, sug.suggestedText)
+  }
+
+  function replaceAllLiteral(source: string, from: string, to: string): string {
+    if (!from) return source
+    return source.split(from).join(to)
+  }
+
+  function replaceSuggestionInRenderedText(source: string, sug: ResumeSuggestion): { value: string; changed: boolean } {
+    let nextValue = source
+    const renderedOriginal = renderContent(sug.originalText)
+    const renderedSuggested = renderContent(sug.suggestedText)
+
+    if (renderedOriginal && nextValue.includes(renderedOriginal)) {
+      nextValue = replaceAllLiteral(nextValue, renderedOriginal, renderedSuggested)
+    }
+
+    if (nextValue.includes(sug.originalText)) {
+      nextValue = replaceAllLiteral(nextValue, sug.originalText, sug.suggestedText)
+    }
+
+    return { value: nextValue, changed: nextValue !== source }
+  }
+
+  function replaceSuggestionInModule(mod: ResumeDocument['modules'][number], sug: ResumeSuggestion): {
+    module: ResumeDocument['modules'][number]
+    changed: boolean
+  } {
+    let changed = false
+
+    const nextEntries = mod.entries?.map(entry => {
+      if (!entry.detail) return entry
+      const replaced = replaceSuggestionInRenderedText(entry.detail, sug)
+      if (!replaced.changed) return entry
+      changed = true
+      return { ...entry, detail: replaced.value }
+    })
+
+    let nextContent = mod.content
+    if (mod.content !== undefined) {
+      const replaced = replaceSuggestionInRenderedText(mod.content || '', sug)
+      if (replaced.changed) {
+        changed = true
+        nextContent = replaced.value
+      }
+    }
+
+    if (!changed) {
+      return { module: mod, changed: false }
+    }
+
+    return {
+      module: {
+        ...mod,
+        entries: nextEntries,
+        content: nextContent,
+      },
+      changed: true,
     }
   }
 
   function syncSuggestionToBuilder(sug: ResumeSuggestion, section: ResumeSection) {
     if (!builderDocument.value) return
-    const moduleType = SECTION_TO_MODULE_TYPE[section.type]
-    if (!moduleType) return
 
-    const mod = builderDocument.value.modules.find(m => m.type === moduleType)
-    if (!mod) return
+    const targetModuleType = SECTION_TO_MODULE_TYPE[section.type]
+    let changedCount = 0
 
-    if (mod.entries?.length) {
-      for (const entry of mod.entries) {
-        if (entry.detail && entry.detail.includes(sug.originalText)) {
-          entry.detail = renderContent(entry.detail.replace(sug.originalText, sug.suggestedText))
-          break
-        }
-      }
-    } else if (mod.content !== undefined) {
-      mod.content = renderContent((mod.content || '').replace(sug.originalText, sug.suggestedText))
+    const firstPassModules = builderDocument.value.modules.map(mod => {
+      if (targetModuleType && mod.type !== targetModuleType) return mod
+      const replaced = replaceSuggestionInModule(mod, sug)
+      if (replaced.changed) changedCount += 1
+      return replaced.module
+    })
+
+    let nextModules = firstPassModules
+
+    // If typed sync misses (e.g. unmatched section type or rich-text transform),
+    // run a module-wide replacement to keep preview/export fully in sync with accepted suggestions.
+    if (changedCount === 0) {
+      nextModules = builderDocument.value.modules.map(mod => {
+        const replaced = replaceSuggestionInModule(mod, sug)
+        return replaced.module
+      })
+    }
+
+    const fallbackSyncedModules = nextModules.map(mod => {
+      if (mod.type !== targetModuleType) return mod
+      if (mod.content === undefined) return mod
+      const hasSuggestedText = mod.content.includes(renderContent(sug.suggestedText)) || mod.content.includes(sug.suggestedText)
+      if (hasSuggestedText) return mod
+      return { ...mod, content: renderContent(section.content) }
+    })
+
+    builderDocument.value = {
+      ...builderDocument.value,
+      modules: fallbackSyncedModules,
     }
   }
 

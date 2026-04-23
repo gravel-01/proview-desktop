@@ -75,6 +75,7 @@ export function generateQuestionnairePromptContext(data: ResumeQuestionnaireSche
   })
 
   const lines: string[] = ['---【用户个性化简历优化问卷意图注入】---']
+  const overrideRules: string[] = []
 
   if (data.targetRole.trim() || targetIndustries.length || data.targetCompanyType.trim()) {
     lines.push(`1. 求职定位：${[data.targetRole.trim(), data.targetCompanyType.trim(), targetIndustries.join(' / ')].filter(Boolean).join(' ｜ ')}`)
@@ -99,6 +100,7 @@ export function generateQuestionnairePromptContext(data: ResumeQuestionnaireSche
   if (validSkills.length) {
     lines.push('6. 希望强调的技能：')
     lines.push(...validSkills.map((skill) => `- ${skill.name.trim()} (${skill.level})`))
+    overrideRules.push('若原简历技能与本问卷技能冲突或重复，请以问卷技能清单为准进行替换/重排，不要并列堆叠。')
   }
 
   if (data.education.school.trim() || data.education.major.trim() || educationHighlights.length) {
@@ -106,6 +108,7 @@ export function generateQuestionnairePromptContext(data: ResumeQuestionnaireSche
     if (educationHighlights.length) {
       lines.push(`- 教育亮点：${educationHighlights.join('、')}`)
     }
+    overrideRules.push('若问卷中填写了学校/学历/专业，请覆盖原简历同类字段，不要把新旧学校或专业拼接在一起。')
   }
 
   if (data.additionalAdvantages.trim()) {
@@ -129,9 +132,13 @@ export function generateQuestionnairePromptContext(data: ResumeQuestionnaireSche
     )
   }
 
+  if (overrideRules.length) {
+    lines.push('', '【字段覆盖规则（严格执行）】', ...overrideRules)
+  }
+
   lines.push(
     '-------------------------------------',
-    '以上内容来自用户主动填写的可选意向问卷。请将其作为优化偏好，而不是脱离原简历事实的虚构信息。',
+    '以上内容来自用户主动填写的可选意向问卷。结构化字段按“覆盖规则”执行，其余内容作为优化偏好；禁止脱离原简历事实虚构。',
   )
 
   return lines.join('\n')
