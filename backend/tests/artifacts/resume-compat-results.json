@@ -1,0 +1,21 @@
+{
+  "suite": "resume_compatibility",
+  "started_at": "2026-04-22T22:19:39.126078",
+  "finished_at": "2026-04-22T22:19:41.892302",
+  "duration_seconds": 2.766,
+  "patterns": [
+    "test_resume_text_extraction.py",
+    "test_resume_compatibility_tracking.py"
+  ],
+  "counts": {
+    "tests_run": 13,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "expected_failures": 0,
+    "unexpected_successes": 0
+  },
+  "failed_items": [],
+  "skipped_items": [],
+  "success": true
+}
