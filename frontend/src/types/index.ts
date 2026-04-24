@@ -1,3 +1,5 @@
+export type ResumeSelection = 'auto-latest' | 'none' | 'uploaded-file' | 'reused-text'
+
 export interface InterviewConfig {
   jobTitle: string
   jobRequirements?: string
@@ -9,6 +11,8 @@ export interface InterviewConfig {
   resumeFile: File | null
   resumeOcrText?: string
   resumeFileName?: string
+  resumeSelection: ResumeSelection
+  resumeSourceSessionId?: string
   voicePer: number
   voiceSpd: number
   modelProvider: string
@@ -95,6 +99,7 @@ export interface SessionStats {
 export interface SetupResponse {
   status: string
   token: string
+  session_id: string
   system_message: string
   parse_result: string
   ai_response: string
@@ -109,6 +114,7 @@ export interface ChatResponse {
 
 export interface EndResponse {
   status: string
+  session_id?: string
   saved?: boolean
   report_available?: boolean
   stats?: SessionStats

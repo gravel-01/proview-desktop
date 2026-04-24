@@ -97,9 +97,9 @@ export async function ttsPreview(text: string, per = 4115, spd = 5): Promise<Arr
 }
 
 /** 获取当前用户最近一条有 OCR 结果的简历 */
-export async function fetchLatestResume(): Promise<{ ocr_result: string; file_name?: string } | null> {
+export async function fetchLatestResume(): Promise<{ ocr_result: string; file_name?: string; session_id?: string } | null> {
   try {
-    const { data } = await api.get<{ ocr_result: string; file_name?: string } | null>('/api/history/resume/latest')
+    const { data } = await api.get<{ ocr_result: string; file_name?: string; session_id?: string } | null>('/api/history/resume/latest')
     return data
   } catch {
     return null
@@ -165,9 +165,9 @@ export async function deleteSessionHistory(sessionId: string): Promise<{ status:
 }
 
 /** 获取某次面试关联的简历 OCR 文本 */
-export async function fetchSessionResume(sessionId: string): Promise<{ ocr_result: string; file_name?: string } | null> {
+export async function fetchSessionResume(sessionId: string): Promise<{ ocr_result: string; file_name?: string; session_id?: string } | null> {
   try {
-    const { data } = await api.get<{ ocr_result: string; file_name?: string } | null>(`/api/history/resume/${sessionId}`)
+    const { data } = await api.get<{ ocr_result: string; file_name?: string; session_id?: string } | null>(`/api/history/resume/${sessionId}`)
     return data
   } catch {
     return null

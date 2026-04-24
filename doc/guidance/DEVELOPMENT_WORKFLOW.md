@@ -25,14 +25,14 @@ Use this mode for:
 Start the backend:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\backend
+cd .\backend
 python app.py
 ```
 
 Start the frontend dev server:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\frontend
+cd .\frontend
 npm run dev
 ```
 
@@ -99,7 +99,7 @@ This means:
 Use browser development first:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\frontend
+cd .\frontend
 npm run dev
 ```
 
@@ -118,7 +118,7 @@ When a change is stable, verify it in Electron.
 Run the backend directly:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\backend
+cd .\backend
 python app.py
 ```
 
@@ -139,14 +139,14 @@ When you want to verify real desktop behavior, do this:
 ### 1. Build the frontend bundle
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run build:frontend
 ```
 
 ### 2. Start Electron
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npx electron .
 ```
 
@@ -166,7 +166,7 @@ Only do this when you actually want an installer or portable package.
 ### Build the installer
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run dist
 ```
 
@@ -192,21 +192,21 @@ This gives the fastest iteration speed with the least packaging overhead.
 ### Install frontend deps
 
 ```powershell
-cd D:\my_data\code\proview-desktop\frontend
+cd .\frontend
 npm install
 ```
 
 ### Install desktop deps
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm install
 ```
 
 ### Install backend deps
 
 ```powershell
-cd D:\my_data\code\proview-desktop\backend
+cd .\backend
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
@@ -214,35 +214,35 @@ python -m playwright install chromium
 ### Run backend only
 
 ```powershell
-cd D:\my_data\code\proview-desktop\backend
+cd .\backend
 python app.py
 ```
 
 ### Run frontend dev only
 
 ```powershell
-cd D:\my_data\code\proview-desktop\frontend
+cd .\frontend
 npm run dev
 ```
 
 ### Build frontend for desktop
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run build:frontend
 ```
 
 ### Package backend for desktop
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run build:backend
 ```
 
 ### Build full desktop release
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run dist
 ```
 
@@ -257,7 +257,7 @@ Cause:
 Fix:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run build:frontend
 ```
 
@@ -297,7 +297,7 @@ Check:
 Run again:
 
 ```powershell
-cd D:\my_data\code\proview-desktop\desktop
+cd .\desktop
 npm run build:backend
 ```
 
@@ -314,4 +314,3 @@ So the short answer is:
 - yes, usually develop the web side first
 - then build it into `frontend/dist`
 - then use `desktop/` to verify and package
-

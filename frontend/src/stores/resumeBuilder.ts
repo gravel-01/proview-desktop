@@ -30,8 +30,8 @@ function createDefaultSettings(): TemplateSettings {
 
 function createDefaultBasicInfo(): BasicInfo {
   return {
-    name: '张明远', gender: '男', birthday: '1996-06', email: 'zhangmy@example.com',
-    mobile: '138-0000-1234', location: '上海', workYears: '3年', photoUrl: '',
+    name: '示例候选人', gender: '男', birthday: '1996-06', email: 'candidate@example.com',
+    mobile: '138-0000-0000', location: '示例城市', workYears: '3年', photoUrl: '',
   }
 }
 
@@ -39,7 +39,7 @@ function createDefaultModules(): ResumeModule[] {
   return [
     {
       id: uid('mod'), type: 'intention', title: '求职意向', visible: true, sortIndex: 0,
-      intention: { targetJob: '前端开发工程师', targetCity: '上海', salary: '15-25K', availableDate: '随时到岗' },
+      intention: { targetJob: '前端开发工程师', targetCity: '示例城市', salary: '15-25K', availableDate: '随时到岗' },
     },
     {
       id: uid('mod'), type: 'education', title: '教育背景', visible: true, sortIndex: 1,
@@ -54,12 +54,12 @@ function createDefaultModules(): ResumeModule[] {
       entries: [
         {
           id: uid('ent'), timeStart: '2021-03', timeEnd: '', isCurrent: true,
-          orgName: '上海星云科技有限公司', role: '高级前端开发工程师',
+          orgName: '示例科技有限公司', role: '高级前端开发工程师',
           detail: '- 负责公司核心电商平台前端架构设计与开发，使用 Vue 3 + TypeScript + Vite 技术栈\n- 主导前端性能优化，首屏加载时间从 3.2s 降至 1.1s，Lighthouse 评分提升至 92 分\n- 搭建组件库与前端工程化体系，统一团队开发规范，提升研发效率 30%\n- 对接后端 RESTful API，实现订单、支付、用户中心等核心业务模块',
         },
         {
           id: uid('ent'), timeStart: '2018-07', timeEnd: '2021-02', isCurrent: false,
-          orgName: '杭州数澜网络科技有限公司', role: '前端开发工程师',
+          orgName: '示例数据科技有限公司', role: '前端开发工程师',
           detail: '- 参与 B 端数据可视化平台开发，使用 React + ECharts 实现多维度数据看板\n- 负责移动端 H5 页面开发与微信小程序维护\n- 编写单元测试与 E2E 测试，代码覆盖率保持在 85% 以上',
         },
       ],

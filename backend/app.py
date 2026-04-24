@@ -898,6 +898,184 @@ def _has_self_intro_request(response_text: str) -> bool:
     return False
 
 
+_STAGE_DIRECTION_BRACKETS = {
+    "（": "）",
+    "(": ")",
+    "【": "】",
+    "[": "]",
+}
+_STAGE_DIRECTION_PREFIXES = (
+    "语气",
+    "口吻",
+    "语调",
+    "语速",
+    "停顿",
+    "动作",
+    "神态",
+    "表情",
+    "情绪",
+    "态度",
+)
+_STAGE_DIRECTION_KEYWORDS = (
+    "语气",
+    "口吻",
+    "语调",
+    "语速",
+    "停顿",
+    "沉默",
+    "冷静",
+    "平静",
+    "严肃",
+    "温和",
+    "柔和",
+    "微笑",
+    "轻笑",
+    "低声",
+    "轻声",
+    "压低声音",
+    "提高语速",
+    "放慢语速",
+    "先别寒暄",
+    "切入正题",
+    "开门见山",
+    "不必重复问候",
+    "不要重复问候",
+    "不必问候",
+    "不要问候",
+    "直接开始",
+    "带压迫感",
+    "略带",
+)
+_STAGE_DIRECTION_KEYWORDS_EN = (
+    "pause",
+    "calm tone",
+    "serious tone",
+    "gentle tone",
+    "softly",
+    "slow down",
+    "speed up",
+    "skip greeting",
+    "no greeting",
+)
+
+
+def _looks_like_stage_direction(segment: str) -> bool:
+    inner = str(segment or "")[1:-1].strip()
+    if not inner:
+        return False
+
+    compact = re.sub(r"\s+", "", inner)
+    if not compact or len(compact) > 48:
+        return False
+
+    lower_inner = inner.lower()
+    if any(keyword in lower_inner for keyword in _STAGE_DIRECTION_KEYWORDS_EN):
+        return True
+
+    if re.search(r"[A-Za-z0-9_/+#-]{2,}", compact):
+        return False
+
+    if compact in {"冷静", "平静", "严肃", "温和", "柔和", "停顿", "微笑", "轻笑"}:
+        return True
+
+    if any(compact.startswith(prefix) for prefix in _STAGE_DIRECTION_PREFIXES):
+        return True
+
+    if any(keyword in compact for keyword in _STAGE_DIRECTION_KEYWORDS):
+        return True
+
+    if re.fullmatch(r"(请)?(直接|不要|不必).{0,18}(问候|寒暄|进入正题|开始)", compact):
+        return True
+
+    if re.fullmatch(r".{0,12}(地说|地问|地回应|地追问|地开场)", compact):
+        return True
+
+    return False
+
+
+class _StreamStageDirectionSanitizer:
+    def __init__(self):
+        self._candidate_chars = []
+        self._candidate_close = ""
+        self._drop_prefix = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        output = []
+        for ch in text:
+            if self._drop_prefix and ch in " \t\r\n\u3000:：,，-—":
+                continue
+            self._drop_prefix = False
+
+            if not self._candidate_chars:
+                close = _STAGE_DIRECTION_BRACKETS.get(ch)
+                if close:
+                    self._candidate_chars = [ch]
+                    self._candidate_close = close
+                else:
+                    output.append(ch)
+                continue
+
+            self._candidate_chars.append(ch)
+            if ch == self._candidate_close:
+                segment = "".join(self._candidate_chars)
+                if _looks_like_stage_direction(segment):
+                    self._drop_prefix = True
+                else:
+                    output.append(segment)
+                self._candidate_chars = []
+                self._candidate_close = ""
+            elif len(self._candidate_chars) > 64:
+                output.append("".join(self._candidate_chars))
+                self._candidate_chars = []
+                self._candidate_close = ""
+
+        return "".join(output)
+
+    def flush(self) -> str:
+        if not self._candidate_chars:
+            return ""
+        segment = "".join(self._candidate_chars)
+        self._candidate_chars = []
+        self._candidate_close = ""
+        return segment
+
+
+def _sanitize_spoken_text(text: str) -> str:
+    if not text:
+        return ""
+
+    sanitizer = _StreamStageDirectionSanitizer()
+    cleaned = sanitizer.feed(text) + sanitizer.flush()
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _sync_last_assistant_message(agent, content: str) -> None:
+    if not agent:
+        return
+
+    history = getattr(agent, "chat_history", None)
+    if not isinstance(history, list):
+        return
+
+    for idx in range(len(history) - 1, -1, -1):
+        item = history[idx]
+        if isinstance(item, dict) and item.get("role") == "assistant":
+            item["content"] = content
+            return
+
+
+def _sanitize_assistant_response(text: str, agent=None) -> str:
+    cleaned = _sanitize_spoken_text(text)
+    if agent:
+        _sync_last_assistant_message(agent, cleaned)
+    return cleaned
+
+
 # PromptGenerator 延迟导入（问题4完整实现后启用）
 _prompt_generator = None
 EVAL_OBSERVER_DRAIN_TIMEOUT_SECONDS = 3.0
@@ -1462,35 +1640,6 @@ def setup_interview():
                         user_id=current_user_id,
                     )
 
-            else:
-                # 未上传简历：自动加载该用户最近一次有 OCR 结果的简历
-                if STORAGE_AVAILABLE and data_client and current_user_id:
-                    try:
-                        latest_resume = data_client.get_latest_resume(user_id=current_user_id)
-                        if latest_resume:
-                            reused_resume = _build_reused_resume_payload(
-                                latest_resume.get("ocr_result"),
-                                source_label="历史简历",
-                            )
-                        else:
-                            reused_resume = None
-
-                        if reused_resume and reused_resume["success"]:
-                            hist_ocr = reused_resume["reusable_text"]
-                            has_resume = True
-                            ocr_raw_text = reused_resume["text"]
-                            ocr_reusable_text = reused_resume["reusable_text"]
-                            ocr_status = "success"
-                            print(f"[OCR] Auto-loaded user historical resume ({len(hist_ocr)} chars)")
-                            all_steps.append({
-                                "tool": "resume_auto_load",
-                                "tool_input": f"user_id={current_user_id}",
-                                "log": "自动加载用户最近一次简历 OCR",
-                                "observation": hist_ocr[:500]
-                            })
-                    except Exception as e:
-                        print(f"[WARN] Auto-load historical resume failed: {e}")
-
             # ── 阶段 2：LLM 简历摘要 + RAG 检索 并行执行 ──
             rag_context = ""
             rag_debug_details = _build_rag_debug_details(
@@ -1590,8 +1739,14 @@ def setup_interview():
 
             # 第三步：让面试官开场
             if has_resume:
-                setup_query = f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后**明确要求候选人做 2-3 分钟的自我介绍**。切记：绝对不要自己编造任何经历！"
+                setup_query = (
+                    f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。"
+                    "请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后明确要求候选人做 2-3 分钟的自我介绍。"
+                    "直接输出候选人最终会听到的话术，不要附带任何括号中的语气说明、动作说明或舞台指令。"
+                    "切记：绝对不要自己编造任何经历！"
+                )
                 response, steps2 = agent.run(setup_query)
+                response = _sanitize_assistant_response(response, agent)
                 
                 # [CHECK] Verify: Check if AI's first sentence includes self-introduction request
                 if _has_self_intro_request(response):
@@ -1604,8 +1759,13 @@ def setup_interview():
                 all_steps = all_steps + steps2
             else:
                 parse_result_text = "No resume provided"
-                setup_query = f"我应聘的岗位是【{job_title}】。我没有提供简历。请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
+                setup_query = (
+                    f"我应聘的岗位是【{job_title}】。我没有提供简历。"
+                    "请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
+                    "直接输出候选人最终会听到的话术，不要附带任何括号中的语气说明、动作说明或舞台指令。"
+                )
                 response, steps_setup = agent.run(setup_query)
+                response = _sanitize_assistant_response(response, agent)
                 
                 # [CHECK] Verify: Check if AI's first sentence includes self-introduction request
                 if _has_self_intro_request(response):
@@ -1631,6 +1791,7 @@ def setup_interview():
             return jsonify({
                 "status": "success",
                 "token": token,
+                "session_id": session_id,
                 "system_message": f"[OK] Interview room created (ID: {session_id[:8]})",
                 "parse_result": parse_result_text,
                 "ai_response": response,
@@ -1647,11 +1808,13 @@ def setup_interview():
                 parse_result_mock = "发现简历中存在跨度较大的项目经历，将作为重点深挖对象。"
             else:
                 ai_resp += "准备好的话，请先做一个简单的自我介绍吧。"
+            ai_resp = _sanitize_assistant_response(ai_resp)
             if STORAGE_AVAILABLE:
                 data_client.save_message(session_id, "assistant", ai_resp)
             return jsonify({
                 "status": "success",
                 "token": token,
+                "session_id": session_id,
                 "system_message": "[Mock 模式] 未检测到 Agent，使用模拟逻辑",
                 "parse_result": parse_result_mock,
                 "ai_response": ai_resp,
@@ -1763,31 +1926,6 @@ def setup_interview_stream():
                         normalize_reusable_ocr_result(ocr_reusable_text),
                         user_id=current_user_id,
                     )
-            else:
-                if STORAGE_AVAILABLE and data_client and current_user_id:
-                    try:
-                        latest_resume = data_client.get_latest_resume(user_id=current_user_id)
-                        reused_resume = (
-                            _build_reused_resume_payload(
-                                latest_resume.get("ocr_result"),
-                                source_label="历史简历",
-                            )
-                            if latest_resume else None
-                        )
-                        if reused_resume and reused_resume["success"]:
-                            has_resume = True
-                            ocr_raw_text = reused_resume["text"]
-                            ocr_reusable_text = reused_resume["reusable_text"]
-                            ocr_status = "success"
-                            all_steps.append({
-                                "tool": "resume_auto_load",
-                                "tool_input": f"user_id={current_user_id}",
-                                "log": "自动加载用户最近一次简历 OCR",
-                                "observation": ocr_reusable_text[:500],
-                            })
-                    except Exception:
-                        pass
-
             if not agent:
                 import time
                 time.sleep(1)
@@ -1800,6 +1938,7 @@ def setup_interview_stream():
                     ai_resp += "准备好的话，请先做一个简单的自我介绍吧。"
                 yield _sse_event("done", {
                     "status": "success", "token": token,
+                    "session_id": session_id,
                     "system_message": "[Mock 模式]", "parse_result": parse_result_text,
                     "ai_response": ai_resp, "ocr_text": ocr_reusable_text if ocr_status == "success" else "",
                     "debug_info": {}
@@ -1881,13 +2020,23 @@ def setup_interview_stream():
 
             yield _sse_event("stage", {"stage": "AI 面试官正在准备开场白..."})
             if has_resume:
-                setup_query = f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后**明确要求候选人做 2-3 分钟的自我介绍**。切记：绝对不要自己编造任何经历！"
+                setup_query = (
+                    f"我应聘的岗位是【{job_title}】。你刚才已经解析了我的真实简历，现在面试正式开始。"
+                    "请以面试官的身份用一段话向我打招呼，简述对我简历的第一印象，然后明确要求候选人做 2-3 分钟的自我介绍。"
+                    "直接输出候选人最终会听到的话术，不要附带任何括号中的语气说明、动作说明或舞台指令。"
+                    "切记：绝对不要自己编造任何经历！"
+                )
                 parse_result_text = "[OK] Resume parsed successfully, interviewer has locked real project details. Please introduce yourself first."
             else:
-                setup_query = f"我应聘的岗位是【{job_title}】。我没有提供简历。请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
+                setup_query = (
+                    f"我应聘的岗位是【{job_title}】。我没有提供简历。"
+                    "请以面试官的身份向我打招呼，并要求候选人先做自我介绍。"
+                    "直接输出候选人最终会听到的话术，不要附带任何括号中的语气说明、动作说明或舞台指令。"
+                )
                 parse_result_text = "No resume provided"
 
             response, steps = agent.run(setup_query)
+            response = _sanitize_assistant_response(response, agent)
             all_steps.extend(steps)
             if _has_self_intro_request(response):
                 print(f"[OK] Verification passed (stream): AI requires candidate self-introduction")
@@ -1909,6 +2058,7 @@ def setup_interview_stream():
 
             yield _sse_event("done", {
                 "status": "success", "token": token,
+                "session_id": session_id,
                 "system_message": f"[OK] Interview room created (ID: {session_id[:8]})",
                 "parse_result": parse_result_text,
                 "ai_response": response,
@@ -1990,6 +2140,7 @@ def end_interview_stream(session_id):
 
             payload = {
                 "status": "success",
+                "session_id": session_id,
                 "saved": False,
                 "report_available": False,
                 "message": "本次面试未保存，评估报告不会生成。",
@@ -2047,6 +2198,7 @@ def end_interview_stream(session_id):
 
         yield _sse_event("done", {
             "status": "success",
+            "session_id": session_id,
             "saved": True,
             "report_available": True,
             "stats": stats,
@@ -2139,6 +2291,7 @@ def chat(session_id):
     if agent:
         try:
             response, steps = agent.run(user_message)
+            response = _sanitize_assistant_response(response, agent)
             if STORAGE_AVAILABLE:
                 data_client.save_message(session_id, "assistant", response)
             debug_info = _build_debug_info(agent, session_id)
@@ -2153,6 +2306,7 @@ def chat(session_id):
         import time
         time.sleep(1.5)
         response = f"针对你刚才说的\u201c{user_message[:10]}...\u201d，你能详细谈谈底层的实现原理吗？"
+        response = _sanitize_assistant_response(response)
         if STORAGE_AVAILABLE:
             data_client.save_message(session_id, "assistant", response)
 
@@ -2198,6 +2352,7 @@ def chat_stream(session_id):
     def generate():
         full_response = ""
         interrupted = False
+        stream_sanitizer = _StreamStageDirectionSanitizer()
         if agent and hasattr(agent, 'run_stream'):
             yield _sse_event("stage", {"stage": "面试官正在深度思考..."})
             try:
@@ -2215,8 +2370,10 @@ def chat_stream(session_id):
                             # 思维链结束，正式回复开始
                             in_thinking = False
                             yield _sse_event("stage", {"stage": "面试官正在组织回复..."})
-                        full_response += chunk
-                        yield _sse_event("content", {"chunk": chunk})
+                        cleaned_chunk = stream_sanitizer.feed(chunk)
+                        if cleaned_chunk:
+                            full_response += cleaned_chunk
+                            yield _sse_event("content", {"chunk": cleaned_chunk})
                     
                     # 检查是否有评估更新需要推送
                     try:
@@ -2238,6 +2395,13 @@ def chat_stream(session_id):
             import time
             time.sleep(1.5)
             full_response = f"针对你刚才说的\u201c{user_message[:10]}...\u201d，你能详细谈谈底层的实现原理吗？"
+
+        trailing_chunk = stream_sanitizer.flush()
+        if trailing_chunk:
+            full_response += trailing_chunk
+            yield _sse_event("content", {"chunk": trailing_chunk})
+
+        full_response = _sanitize_assistant_response(full_response, agent)
 
         if STORAGE_AVAILABLE and full_response:
             data_client.save_message(session_id, "assistant", full_response)
@@ -2307,6 +2471,7 @@ def end_interview(session_id):
 
         payload = {
             "status": "success",
+            "session_id": session_id,
             "saved": False,
             "report_available": False,
             "message": "本次面试未保存，评估报告不会生成。",
@@ -2361,6 +2526,7 @@ def end_interview(session_id):
         _agents.pop(session_id, None)
         return jsonify({
             "status": "success",
+            "session_id": session_id,
             "saved": True,
             "report_available": True,
             "stats": stats,
@@ -2374,6 +2540,7 @@ def end_interview(session_id):
     revoke_session(session_id)
     return jsonify({
         "status": "success",
+        "session_id": session_id,
         "saved": True,
         "report_available": bool(eval_result),
         "message": "会话已结束",
@@ -3016,7 +3183,7 @@ def _do_tts():
         return jsonify({"status": "error", "message": "语音服务未配置"}), 503
 
     data = request.json or {}
-    text = data.get('text', '')
+    text = _sanitize_spoken_text(data.get('text', ''))
     if not text:
         return jsonify({"status": "error", "message": "文本不能为空"}), 400
 

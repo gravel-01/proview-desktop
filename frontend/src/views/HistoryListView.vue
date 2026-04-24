@@ -71,25 +71,31 @@ onMounted(loadHistory)
 </script>
 
 <template>
-  <div class="fade-in min-h-full max-w-4xl mx-auto">
-    <div class="mb-6">
-      <h2 class="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">面试历史</h2>
-      <p class="mt-2 text-sm font-medium text-slate-500 dark:text-slate-400">仅保存的面试会出现在这里，历史记录和报告会一直保留，除非你主动删除。</p>
-      <p v-if="quota" class="mt-2 text-sm text-primary">
-        已保存 {{ quota.saved_count }} 条历史记录
-        <span v-if="quota.remaining != null">，剩余 {{ quota.remaining }} 条可用额度</span>
-      </p>
-    </div>
+  <div class="fade-in min-h-full max-w-5xl mx-auto">
+    <section class="history-hero ui-card mb-6 p-6">
+      <div class="relative z-[1] flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <span class="ui-section-badge">面试历史</span>
+          <h2 class="ui-page-title mt-4 text-3xl">面试历史</h2>
+          <p class="ui-page-subtitle mt-2 text-sm font-medium">仅保存的面试会出现在这里，历史记录和报告会一直保留，除非你主动删除。</p>
+        </div>
+        <div v-if="quota" class="history-quota">
+          <p class="history-quota__label">已保存</p>
+          <p class="history-quota__value">{{ quota.saved_count }}</p>
+          <p v-if="quota.remaining != null" class="history-quota__sub">剩余 {{ quota.remaining }} 条可用额度</p>
+        </div>
+      </div>
+    </section>
 
-    <div v-if="loading" class="py-20 text-center text-slate-400 dark:text-white/40">加载中...</div>
+    <div v-if="loading" class="ui-empty-state py-20 text-center text-slate-400 dark:text-white/40">加载中...</div>
 
-    <div v-else-if="!list.length" class="py-20 text-center">
+    <div v-else-if="!list.length" class="ui-empty-state py-20 text-center">
       <Inbox class="mx-auto mb-3 h-12 w-12 text-slate-300 dark:text-white/20" />
       <p class="text-sm text-slate-400 dark:text-white/40">暂无面试记录，结束面试时选择“保存并生成报告”后会显示在这里。</p>
     </div>
 
     <div v-else class="space-y-3">
-      <div v-for="s in list" :key="s.session_id" class="history-card flex items-center gap-4">
+      <div v-for="s in list" :key="s.session_id" class="history-card ui-card ui-card-interactive flex items-center gap-4">
         <button
           type="button"
           class="group flex min-w-0 flex-1 items-center gap-4 text-left"
@@ -99,10 +105,10 @@ onMounted(loadHistory)
             <div class="mb-1 flex items-center gap-2">
               <span class="truncate text-sm font-bold text-slate-800 dark:text-white/90">{{ s.position || '未知岗位' }}</span>
               <span
-                class="inline-block shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                class="ui-badge inline-block shrink-0"
                 :class="s.status === 'completed'
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                  : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'"
+                  ? 'ui-badge-success'
+                  : 'ui-badge-warning'"
               >
                 {{ s.status === 'completed' ? '已完成' : '进行中' }}
               </span>
@@ -111,13 +117,13 @@ onMounted(loadHistory)
               <span v-if="styleMap[s.interview_style || '']">{{ styleMap[s.interview_style || ''] }}</span>
               <span
                 v-if="s.metadata?.type && typeMap[s.metadata.type]"
-                class="rounded-full bg-blue-50 px-1.5 py-0.5 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400"
+                class="ui-badge ui-badge-info"
               >
                 {{ typeMap[s.metadata.type] }}
               </span>
               <span
                 v-if="s.metadata?.diff && diffMap[s.metadata.diff]"
-                class="rounded-full bg-purple-50 px-1.5 py-0.5 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400"
+                class="ui-badge ui-badge-purple"
               >
                 {{ diffMap[s.metadata.diff] }}
               </span>
@@ -129,7 +135,7 @@ onMounted(loadHistory)
 
         <button
           type="button"
-          class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-rose-200 text-rose-500 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-500/20 dark:hover:bg-rose-500/10"
+          class="history-delete ui-btn ui-btn-danger h-11 w-11 shrink-0 px-0 disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="deletingId === s.session_id"
           @click="handleDelete(s.session_id)"
         >
@@ -144,23 +150,70 @@ onMounted(loadHistory)
 @reference "tailwindcss";
 
 .history-card {
-  @apply rounded-2xl border p-4 transition-all;
-  background: rgba(255, 255, 255, 0.7);
-  border-color: rgb(226, 232, 240);
+  padding: 1rem 1.1rem;
 }
 
-.history-card:hover {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 3%, white);
+.history-hero {
+  position: relative;
+  overflow: hidden;
 }
 
-:where(.dark) .history-card {
-  background: #1A1A24;
-  border-color: rgba(255, 255, 255, 0.1);
+.history-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 14% 20%, rgba(56, 189, 248, 0.12), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(244, 114, 182, 0.08), transparent 22%);
+  pointer-events: none;
 }
 
-:where(.dark) .history-card:hover {
-  border-color: color-mix(in srgb, var(--color-primary) 60%, transparent);
-  background: rgba(255, 255, 255, 0.03);
+.history-quota {
+  min-width: 160px;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.66);
+  padding: 0.95rem 1rem;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.history-quota__label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.history-quota__value {
+  margin-top: 0.55rem;
+  font-size: 1.9rem;
+  line-height: 1;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.history-quota__sub {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.history-delete {
+  border-radius: 1rem;
+}
+
+:where(.dark) .history-quota {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:where(.dark) .history-quota__value {
+  color: rgba(255, 255, 255, 0.96);
+}
+
+:where(.dark) .history-quota__sub {
+  color: #94a3b8;
 }
 </style>

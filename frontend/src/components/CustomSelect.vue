@@ -54,7 +54,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="selectRef" class="custom-select-wrapper">
+  <div ref="selectRef" class="custom-select-wrapper" :class="{ 'custom-select-wrapper--open': isOpen }">
     <button
       type="button"
       @click="toggleDropdown"
@@ -90,6 +90,11 @@ onUnmounted(() => {
 
 .custom-select-wrapper {
   @apply relative;
+  z-index: 1;
+}
+
+.custom-select-wrapper--open {
+  z-index: 40;
 }
 
 .custom-select-trigger {
@@ -137,14 +142,18 @@ onUnmounted(() => {
   overflow-y: auto;
   background: white;
   border-color: rgb(226, 232, 240);
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 24px 48px -18px rgba(15, 23, 42, 0.3),
+    0 10px 18px -8px rgba(15, 23, 42, 0.14);
 }
 
 .dark .custom-select-dropdown {
   /* 暗黑模式：使用悬浮层级颜色 */
   background: #1E1E2E;
   border-color: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    0 24px 48px -18px rgba(0, 0, 0, 0.55),
+    0 12px 20px -10px rgba(0, 0, 0, 0.4);
 }
 
 .custom-select-option {

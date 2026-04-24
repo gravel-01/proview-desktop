@@ -18,6 +18,7 @@ type EndStatus = 'idle' | 'generating'
 
 const INTERVIEW_SESSION_TOKEN_KEY = 'proview_interview_session_token'
 const INTERVIEW_SESSION_STATUS_KEY = 'proview_interview_session_status'
+const INTERVIEW_SESSION_ID_KEY = 'interview_session_id'
 
 function isAbortError(error: unknown) {
   return !!error && typeof error === 'object' && 'name' in error && error.name === 'AbortError'
@@ -59,8 +60,11 @@ function removeSessionStorageItem(key: string) {
 export const useInterviewStore = defineStore('interview', () => {
   const persistedToken = readSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY) || ''
   const persistedStatus = readSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY) || ''
+  const persistedSessionId = readSessionStorageItem(INTERVIEW_SESSION_ID_KEY) || ''
 
   const token = ref(persistedToken)
+  const currentSessionId = ref(persistedSessionId)
+  const lastSavedSessionId = ref('')
   const messages = ref<ChatMessage[]>([])
   const debugLogs = ref<DebugLogEntry[]>([])
   const isAiSpeaking = ref(false)
@@ -93,7 +97,7 @@ export const useInterviewStore = defineStore('interview', () => {
   const isEnding = computed(() => endStatus.value === 'generating')
 
   const config = ref<InterviewConfig>({
-    jobTitle: '高级前端开发工程师',
+    jobTitle: '',
     jobRequirements: '',
     style: 'strict',
     interviewType: 'technical',
@@ -101,6 +105,7 @@ export const useInterviewStore = defineStore('interview', () => {
     featureVad: true,
     featureDeep: true,
     resumeFile: null,
+    resumeSelection: 'auto-latest',
     voicePer: 4100,
     voiceSpd: 5,
     modelProvider: 'ernie'
@@ -115,6 +120,9 @@ export const useInterviewStore = defineStore('interview', () => {
   if (token.value && interviewStatus.value === 'active') {
     writeSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY, token.value)
     writeSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY, 'active')
+    if (currentSessionId.value) {
+      writeSessionStorageItem(INTERVIEW_SESSION_ID_KEY, currentSessionId.value)
+    }
   }
 
   function clearThinkingState() {
@@ -125,12 +133,14 @@ export const useInterviewStore = defineStore('interview', () => {
   function rehydrateInterviewSession() {
     const storedToken = readSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY) || ''
     const storedStatus = readSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY) || ''
+    const storedSessionId = readSessionStorageItem(INTERVIEW_SESSION_ID_KEY) || ''
 
     if (!storedToken) {
       return false
     }
 
     token.value = storedToken
+    currentSessionId.value = storedSessionId
     interviewStatus.value = storedStatus === 'ended' ? 'ended' : 'active'
     return true
   }
@@ -139,15 +149,55 @@ export const useInterviewStore = defineStore('interview', () => {
     if (token.value && interviewStatus.value === 'active') {
       writeSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY, token.value)
       writeSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY, 'active')
+      if (currentSessionId.value) {
+        writeSessionStorageItem(INTERVIEW_SESSION_ID_KEY, currentSessionId.value)
+      } else {
+        removeSessionStorageItem(INTERVIEW_SESSION_ID_KEY)
+      }
       return
     }
     removeSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY)
     removeSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY)
+    removeSessionStorageItem(INTERVIEW_SESSION_ID_KEY)
   }
 
   function clearInterviewSessionStorage() {
     removeSessionStorageItem(INTERVIEW_SESSION_TOKEN_KEY)
     removeSessionStorageItem(INTERVIEW_SESSION_STATUS_KEY)
+    removeSessionStorageItem(INTERVIEW_SESSION_ID_KEY)
+  }
+
+  function clearResumeSelection() {
+    config.value.resumeFile = null
+    config.value.resumeOcrText = undefined
+    config.value.resumeFileName = undefined
+    config.value.resumeSelection = 'none'
+    config.value.resumeSourceSessionId = undefined
+  }
+
+  function setUploadedResume(file: File | null) {
+    if (!file) return
+    config.value.resumeFile = file
+    config.value.resumeOcrText = undefined
+    config.value.resumeFileName = undefined
+    config.value.resumeSelection = 'uploaded-file'
+    config.value.resumeSourceSessionId = undefined
+  }
+
+  function setReusedResume(
+    ocrText: string,
+    options: {
+      fileName?: string
+      sourceSessionId?: string
+      selection?: InterviewConfig['resumeSelection']
+    } = {}
+  ) {
+    const nextOcrText = ocrText.trim()
+    config.value.resumeFile = null
+    config.value.resumeOcrText = nextOcrText || undefined
+    config.value.resumeFileName = options.fileName || undefined
+    config.value.resumeSelection = nextOcrText ? (options.selection || 'reused-text') : 'none'
+    config.value.resumeSourceSessionId = options.sourceSessionId || undefined
   }
 
   function snapshotConfig(): InterviewConfig {
@@ -256,6 +306,8 @@ export const useInterviewStore = defineStore('interview', () => {
     activeStreamMessageId = null
 
     token.value = ''
+    currentSessionId.value = ''
+    lastSavedSessionId.value = ''
     messages.value = []
     debugLogs.value = []
     isAiSpeaking.value = false
@@ -301,11 +353,24 @@ export const useInterviewStore = defineStore('interview', () => {
       }
 
       token.value = doneData.token
+      currentSessionId.value = doneData.session_id || ''
+      lastSavedSessionId.value = ''
       interviewStatus.value = 'active'
       persistInterviewSession()
 
-      if (doneData.ocr_text) config.value.resumeOcrText = doneData.ocr_text
-      if (requestConfig.resumeFile) config.value.resumeFileName = requestConfig.resumeFile.name
+      if (requestConfig.resumeFile) {
+        setReusedResume(doneData.ocr_text || '', {
+          fileName: requestConfig.resumeFile.name,
+          sourceSessionId: doneData.session_id || undefined,
+          selection: 'reused-text',
+        })
+      } else if (doneData.ocr_text) {
+        setReusedResume(doneData.ocr_text, {
+          fileName: requestConfig.resumeFileName,
+          sourceSessionId: requestConfig.resumeSourceSessionId,
+          selection: requestConfig.resumeSelection === 'auto-latest' ? 'auto-latest' : 'reused-text',
+        })
+      }
       if (doneData.system_message) addMessage('system', doneData.system_message)
       if (doneData.parse_result) addMessage('system', `\u2728 AI \u6d1e\u5bdf: ${doneData.parse_result}`)
       if (doneData.ai_response) addMessage('ai', doneData.ai_response)
@@ -437,10 +502,19 @@ export const useInterviewStore = defineStore('interview', () => {
 
       if (doneData?.quota) historyQuota.value = doneData.quota
       if (saveHistory && doneData?.saved !== false) {
+        const finishedSessionId = doneData?.session_id || currentSessionId.value
         if (doneData?.stats) stats.value = doneData.stats
         evalStrengths.value = doneData?.strengths || ''
         evalWeaknesses.value = doneData?.weaknesses || ''
         evalSummary.value = doneData?.summary || ''
+        lastSavedSessionId.value = finishedSessionId || ''
+        if (
+          finishedSessionId
+          && isReusableOcrText(config.value.resumeOcrText || '')
+          && !config.value.resumeSourceSessionId
+        ) {
+          config.value.resumeSourceSessionId = finishedSessionId
+        }
         interviewStatus.value = 'ended'
         lastEndSaved.value = true
         clearInterviewSessionStorage()
@@ -467,10 +541,19 @@ export const useInterviewStore = defineStore('interview', () => {
       const data = await interviewApi.endInterview(saveHistory)
       if (data?.quota) historyQuota.value = data.quota
       if (saveHistory && data?.saved !== false) {
+        const finishedSessionId = data?.session_id || currentSessionId.value
         if (data.stats) stats.value = data.stats
         evalStrengths.value = data.strengths || ''
         evalWeaknesses.value = data.weaknesses || ''
         evalSummary.value = data.summary || ''
+        lastSavedSessionId.value = finishedSessionId || ''
+        if (
+          finishedSessionId
+          && isReusableOcrText(config.value.resumeOcrText || '')
+          && !config.value.resumeSourceSessionId
+        ) {
+          config.value.resumeSourceSessionId = finishedSessionId
+        }
         interviewStatus.value = 'ended'
         lastEndSaved.value = true
         clearInterviewSessionStorage()
@@ -490,9 +573,8 @@ export const useInterviewStore = defineStore('interview', () => {
   function reset() {
     resetSessionRuntime()
     historyQuota.value = null
-    config.value.resumeOcrText = undefined
-    config.value.resumeFileName = undefined
-    config.value.resumeFile = null
+    clearResumeSelection()
+    config.value.resumeSelection = 'auto-latest'
   }
 
   async function checkHealth() {
@@ -516,7 +598,11 @@ export const useInterviewStore = defineStore('interview', () => {
         if (isReusableOcrText(resumeOcrText)) ocrText = resumeOcrText
         if (resume?.file_name) fileName = resume.file_name
       } catch {
-        // Silent fallback.
+        // The explicit error below will guide the user to upload a new resume.
+      }
+
+      if (!ocrText) {
+        throw new Error('该历史记录没有可复用的简历解析结果，请改为上传新简历。')
       }
     }
 
@@ -532,11 +618,13 @@ export const useInterviewStore = defineStore('interview', () => {
       resumeFile: null,
       resumeOcrText: ocrText || undefined,
       resumeFileName: fileName || undefined,
+      resumeSelection: skipResume ? 'none' : 'reused-text',
+      resumeSourceSessionId: skipResume ? undefined : sessionId,
     }
   }
 
   return {
-    token, messages, debugLogs, isAiSpeaking, aiState,
+    token, currentSessionId, lastSavedSessionId, messages, debugLogs, isAiSpeaking, aiState,
     interviewStatus, stats, config, serviceStatus, historyQuota, lastEndSaved,
     evalStrengths, evalWeaknesses, evalSummary,
     canEnterInterviewRoom, shouldRedirectInterviewToReport,
@@ -544,6 +632,7 @@ export const useInterviewStore = defineStore('interview', () => {
     evalDrafts, evalInProgress, currentEvalTurn,
     setupStatus, responseStatus, endStatus,
     isSettingUp, isResponding, canStopResponse, isEnding,
+    setUploadedResume, setReusedResume, clearResumeSelection,
     addMessage, removeMessage, updateMessage, addDebugLog, setAiState,
     addPipelineStep, clearPipeline,
     addEvalDraft, clearEvalDrafts, resetSessionRuntime, rehydrateInterviewSession,

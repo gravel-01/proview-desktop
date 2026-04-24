@@ -78,7 +78,7 @@ onMounted(async () => {
       :value="modelValue"
       @input="onInput"
       type="text"
-      placeholder="例如：高级前端开发工程师"
+      placeholder="在这里填写岗位"
       class="config-input w-full"
     />
 

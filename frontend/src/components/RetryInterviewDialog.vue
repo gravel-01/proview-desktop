@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { FileCheck, Upload, RotateCcw, X } from 'lucide-vue-next'
 
 const props = defineProps<{
   visible: boolean
   fileName?: string
+  canKeepResume?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +17,12 @@ const choice = ref<'keep' | 'upload'>('keep')
 const selectedFile = ref<File | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
+watch(() => props.visible, (visible) => {
+  if (!visible) return
+  choice.value = props.canKeepResume === false ? 'upload' : 'keep'
+  selectedFile.value = null
+})
+
 function handleFileSelect(e: Event) {
   const input = e.target as HTMLInputElement
   selectedFile.value = input.files?.[0] || null
@@ -26,6 +33,7 @@ function triggerFileInput() {
 }
 
 function handleConfirm() {
+  if (choice.value === 'keep' && props.canKeepResume === false) return
   if (choice.value === 'upload' && !selectedFile.value) return
   emit('confirm', choice.value, selectedFile.value || undefined)
 }
@@ -55,15 +63,28 @@ function handleCancel() {
         <!-- 选项 -->
         <div class="modal-body">
           <!-- 使用上次简历 -->
-          <button type="button" @click="choice = 'keep'"
-            class="option-card" :class="choice === 'keep' ? 'option-active' : 'option-idle'">
+          <button
+            type="button"
+            :disabled="props.canKeepResume === false"
+            @click="props.canKeepResume !== false && (choice = 'keep')"
+            class="option-card"
+            :class="[
+              choice === 'keep' ? 'option-active' : 'option-idle',
+              props.canKeepResume === false ? 'option-disabled' : '',
+            ]"
+          >
             <div class="flex items-center gap-3">
               <div class="option-radio" :class="choice === 'keep' ? 'radio-active' : 'radio-idle'" />
               <div class="flex-1 text-left">
                 <div class="option-title">使用上次简历</div>
                 <div class="option-desc">
-                  <FileCheck class="w-3.5 h-3.5 inline -mt-0.5 text-green-500" />
-                  {{ fileName || '历史简历' }}
+                  <template v-if="props.canKeepResume === false">
+                    该记录没有可复用的简历解析结果，请改为上传新简历
+                  </template>
+                  <template v-else>
+                    <FileCheck class="w-3.5 h-3.5 inline -mt-0.5 text-green-500" />
+                    {{ fileName || '历史简历' }}
+                  </template>
                 </div>
               </div>
             </div>
@@ -152,6 +173,10 @@ function handleCancel() {
 
 .option-idle {
   @apply border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20;
+}
+
+.option-disabled {
+  @apply cursor-not-allowed opacity-60;
 }
 
 .option-radio {

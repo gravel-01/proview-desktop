@@ -3,7 +3,7 @@ export default { name: 'InterviewView' }
 </script>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onActivated } from 'vue'
+import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useInterviewStore } from '../stores/interview'
 import AiVisualization from '../components/AiVisualization.vue'
@@ -17,15 +17,7 @@ const chatPanel = ref<InstanceType<typeof ChatPanel> | null>(null)
 const ending = ref(false)
 const endingChoice = ref<'save' | 'discard'>('save')
 const showEndDialog = ref(false)
-const quotaLoading = ref(false)
 const endError = ref('')
-
-const quotaText = computed(() => {
-  const quota = store.historyQuota
-  if (!quota) return '正在读取已保存历史...'
-  if (quota.max_saved == null) return `已保存 ${quota.saved_count} 条历史记录`
-  return `已保存 ${quota.saved_count}/${quota.max_saved}`
-})
 
 onMounted(async () => {
   if (store.shouldRedirectInterviewToReport) {
@@ -63,9 +55,6 @@ async function openEndDialog() {
   store.setAiState('idle')
   endError.value = ''
   showEndDialog.value = true
-  quotaLoading.value = true
-  await store.loadHistoryQuota()
-  quotaLoading.value = false
 }
 
 function closeEndDialog() {
@@ -120,11 +109,7 @@ async function confirmEnd(saveHistory: boolean) {
         </p>
 
         <div class="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
-          <span v-if="quotaLoading">正在加载历史额度...</span>
-          <span v-else>{{ quotaText }}</span>
-          <span v-if="store.historyQuota?.remaining != null" class="ml-2 text-slate-400 dark:text-slate-500">
-            剩余 {{ store.historyQuota.remaining }} 条
-          </span>
+          保存本次面试后会继续生成评估报告并跳转到报告页；不保存则直接结束本次面试，不保留报告内容。
         </div>
 
         <p v-if="endError" class="mt-3 text-sm text-rose-500">{{ endError }}</p>
@@ -147,7 +132,6 @@ async function confirmEnd(saveHistory: boolean) {
           <button
             type="button"
             class="flex-1 rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="quotaLoading"
             @click="confirmEnd(true)"
           >
             保存并生成报告

@@ -341,6 +341,6 @@ OCR_TOOL = {
 
 if __name__ == "__main__":
     # 本地测试示例
-    test_image_path = r"D:\my_data\AAA工作\简历\初版.pdf"  # 替换为你的测试图片路径
+    test_image_path = r".\sample.pdf"  # 替换为你的测试文件路径
     result = perform_ocr(test_image_path, use_preprocessing=True, is_screen_capture=False)
     print(result)
