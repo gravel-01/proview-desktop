@@ -66,7 +66,7 @@
 
 <table>
 <tr>
-<td align="center"><img src="img/imgv3/评估报告页面.png" width="48%" alt="评估报告页面"> <img src="img/imgv3/自定义页面.png" width="48%" alt="自定义页面"></td>
+<td align="center"><img src="img/imgv3/评估报告页面.png" width="48%" alt="评估报告页面"></td>
 </tr>
 </table>
 
