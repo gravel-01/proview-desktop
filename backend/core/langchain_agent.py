@@ -36,6 +36,8 @@ except Exception:
 HAVE_LANGCHAIN = False
 create_openai_functions_agent = None
 AgentExecutor = None
+initialize_agent_fn = None
+AgentTypeEnum = None
 ChatOpenAI = None
 ConversationBufferMemory = None
 SystemMessage = None
@@ -43,22 +45,26 @@ MessagesPlaceholder = None
 ChatPromptTemplate = None
 
 try:
-    # 新版 LangChain API (>= 0.1.0)
-    from langchain.agents import create_openai_functions_agent, AgentExecutor
+    from langchain import agents as lc_agents
     from langchain.schema import SystemMessage
     from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    HAVE_LANGCHAIN = True
+
+    # 新版 LangChain API (>= 0.1.x)
+    create_openai_functions_agent = getattr(lc_agents, "create_openai_functions_agent", None)
+    AgentExecutor = getattr(lc_agents, "AgentExecutor", None)
+
+    # 旧版 LangChain API (< 0.1.x)
+    initialize_agent_fn = getattr(lc_agents, "initialize_agent", None)
+    AgentTypeEnum = getattr(lc_agents, "AgentType", None)
+
+    HAVE_LANGCHAIN = any([
+        create_openai_functions_agent is not None and AgentExecutor is not None,
+        initialize_agent_fn is not None and AgentTypeEnum is not None,
+    ])
 except Exception as e:
-    print(f"Warning: Failed to import new langchain.agents API: {e}")
-    # 尝试旧版 API
-    try:
-        from langchain.agents import initialize_agent, AgentType
-        from langchain.schema import SystemMessage
-        create_openai_functions_agent = None  # 标记使用旧 API
-        AgentExecutor = None
-        HAVE_LANGCHAIN = True
-    except Exception as e2:
-        print(f"Warning: Failed to import old langchain.agents API: {e2}")
+    # 避免启动日志噪音，仅在显式开启时输出导入调试信息
+    if os.getenv("LANGCHAIN_IMPORT_DEBUG", "0") == "1":
+        print(f"Warning: Failed to import langchain agents API: {e}")
 
 try:
     from langchain_openai import ChatOpenAI
@@ -218,20 +224,21 @@ class LangChainInterviewAgent:
                         memory=self.memory,
                         handle_parsing_errors=True
                     )
-                else:
+                elif initialize_agent_fn is not None and AgentTypeEnum is not None:
                     # 旧版 LangChain (< 0.1.0) - 使用 initialize_agent
-                    from langchain.agents import initialize_agent, AgentType
                     system_message = SystemMessage(content=self.prompt)
 
-                    self.agent_executor = initialize_agent(
+                    self.agent_executor = initialize_agent_fn(
                         tools=self.tools,
                         llm=llm,
-                        agent=AgentType.OPENAI_FUNCTIONS,
+                        agent=AgentTypeEnum.OPENAI_FUNCTIONS,
                         verbose=self.verbose,
                         agent_kwargs={"system_message": system_message},
                         memory=self.memory,
                         handle_parsing_errors=True
                     )
+                else:
+                    raise RuntimeError("No compatible LangChain agent API found in current environment")
 
                 if self.verbose:
                     print("Successfully initialized LangChain Agent with tools")

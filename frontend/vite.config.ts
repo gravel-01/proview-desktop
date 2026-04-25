@@ -35,8 +35,10 @@ const backendPort = process.env.PROVIEW_API_PORT || readBackendEnvValue('PROVIEW
 const backendTarget = process.env.VITE_DEV_API_TARGET || `http://localhost:${backendPort}`
 const isDesktopBuild = process.env.PROVIEW_DESKTOP_BUILD === '1'
 
-export default defineConfig({
-  base: isDesktopBuild ? './' : '/',
+export default defineConfig(({ command }) => ({
+  // serve: 使用绝对根路径，保证开发环境 HMR 与资源解析稳定。
+  // build: 默认使用相对路径，避免桌面端 file:// 打开时 /assets 失效导致白屏。
+  base: command === 'serve' ? '/' : './',
   plugins: [vue(), tailwindcss()],
   build: {
     rollupOptions: {
@@ -53,5 +55,8 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  define: {
+    __PROVIEW_DESKTOP_BUILD__: JSON.stringify(isDesktopBuild)
   }
-})
+}))

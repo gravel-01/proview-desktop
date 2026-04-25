@@ -104,7 +104,7 @@
                         <i data-lucide="sun" id="icon-sun" class="w-5 h-5 hidden dark:block"></i>
                         <i data-lucide="moon" id="icon-moon" class="w-5 h-5 block dark:hidden"></i>
                     </button>
-                    <a href="./app.html" class="relative inline-flex h-11 active:scale-95 transition-transform">
+                    <a href="./app.html" data-enter-app class="relative inline-flex h-11 active:scale-95 transition-transform">
                         <div class="absolute inset-0 bg-blue-600 dark:bg-gradient-to-r dark:from-indigo-500 dark:via-purple-500 dark:to-fuchsia-500 rounded-full blur opacity-40 dark:opacity-70"></div>
                         <span class="relative inline-flex items-center justify-center px-6 py-2 text-sm font-bold text-white bg-blue-600 dark:bg-[#0A0A0F] rounded-full dark:border dark:border-white/10 hover:bg-blue-700 dark:hover:bg-transparent transition-colors shadow-md">
                             进入面试系统
@@ -133,7 +133,7 @@
                     上传真实简历，AI 自动解析并生成针对性攻击策略。LangChain Agent 驱动的多轮追问，让你在极限压力下锤炼面试能力。
                 </p>
                 <div class="flex flex-col sm:flex-row gap-4 sm:gap-5 justify-center lg:justify-start">
-                    <a href="./app.html" class="relative inline-flex group h-14 w-full sm:w-auto">
+                    <a href="./app.html" data-enter-app class="relative inline-flex group h-14 w-full sm:w-auto">
                         <div class="absolute transition-all duration-1000 opacity-0 dark:opacity-70 -inset-px bg-gradient-to-r from-[#44BCFF] via-[#FF44EC] to-[#FF675E] rounded-full blur-lg group-hover:opacity-100 group-hover:-inset-1 group-hover:duration-200"></div>
                         <span class="relative inline-flex items-center justify-center w-full px-8 py-4 text-lg font-bold text-white transition-all duration-200 bg-blue-600 hover:bg-blue-700 dark:bg-slate-900 rounded-full dark:border dark:border-white/10 gap-3 shadow-xl dark:shadow-none">
                             <i data-lucide="play" class="w-6 h-6"></i>
@@ -364,7 +364,7 @@
         <div class="max-w-4xl mx-auto px-4 text-center">
             <h2 class="text-3xl md:text-5xl font-bold mb-6 text-slate-900 dark:text-white">准备好接受挑战了吗？</h2>
             <p class="text-lg text-slate-600 dark:text-slate-400 mb-10 max-w-2xl mx-auto">上传你的真实简历，让 AI 面试官找出你的每一个弱点。只有经历过最严苛的训练，才能在真实面试中游刃有余。</p>
-            <a href="./app.html" class="relative inline-flex group h-14">
+            <a href="./app.html" data-enter-app class="relative inline-flex group h-14">
                 <div class="absolute transition-all duration-1000 opacity-0 dark:opacity-70 -inset-px bg-gradient-to-r from-[#44BCFF] via-[#FF44EC] to-[#FF675E] rounded-full blur-lg group-hover:opacity-100 group-hover:-inset-1 group-hover:duration-200"></div>
                 <span class="relative inline-flex items-center justify-center px-10 py-4 text-lg font-bold text-white transition-all duration-200 bg-blue-600 hover:bg-blue-700 dark:bg-slate-900 rounded-full dark:border dark:border-white/10 gap-3 shadow-xl dark:shadow-none">
                     <i data-lucide="zap" class="w-5 h-5"></i>
@@ -387,6 +387,25 @@
 
     <script>
         lucide.createIcons();
+
+        // 智能进入主系统：
+        // - dist 落地页 -> ./app.html
+        // - 源码落地页(frontend/index.html) -> ./dist/app.html
+        function resolveAppEntryUrl() {
+            const pathname = window.location.pathname || '';
+            const inDist = /\/dist\/index\.html$/i.test(pathname);
+            const inFrontendSource = /\/frontend\/index\.html$/i.test(pathname);
+            if (inFrontendSource) return './dist/app.html';
+            if (inDist) return './app.html';
+            return './app.html';
+        }
+
+        document.querySelectorAll('[data-enter-app]').forEach((el) => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                window.location.assign(resolveAppEntryUrl());
+            });
+        });
 
         // 主题切换 — View Transitions API 圆形扩散
         document.getElementById('theme-toggle').addEventListener('click', async function(e) {
