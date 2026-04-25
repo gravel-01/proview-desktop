@@ -177,6 +177,7 @@ npx electron .
 <img src="img/e6da98d1e8ba5e54598a5651d16c2ee.png" width="300" alt="模型体验">
 <img src="img/dd5906b528b5a1a3981d4dab872adc3.png" width="300" alt="复制密钥">
 
+<img src="img/语音模块.png" width="300" alt="语音模块">
 </details>
 
 ---
