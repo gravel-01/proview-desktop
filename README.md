@@ -171,6 +171,8 @@ npx electron .
 
 登录 [百度星河社区](https://aistudio.baidu.com/overview) → 完成实名认证 → 获取文心 API Key → 填入应用设置。
 
+语音功能:[百度千帆平台](https://console.bce.baidu.com/) → 完成实名认证 → 获取语音模型 APP Key/SECRET Key → 填入应用设置。
+
 参考截图：
 
 <img src="img/b35fb4a1d85ddd0c136ff0576648402.png" width="300" alt="星河社区">
