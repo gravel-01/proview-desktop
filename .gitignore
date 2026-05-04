@@ -38,6 +38,8 @@ backend/temp/
 backend/ocr_outputs/
 backend/uploaded_resumes/
 backend/tests/.codex_tmp*/
+backend/tests/__pycache__/
+backend/processed_images/
 
 logs/
 # PyInstaller
@@ -84,6 +86,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+doc/upgrade
+doc/issues
 
 # PyBuilder
 .pybuilder/
@@ -221,3 +225,4 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 codex-data/
+

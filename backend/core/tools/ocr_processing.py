@@ -3,12 +3,12 @@ import os
 from pathlib import Path
 import requests
 import base64
-import sys
 import cv2
 import numpy as np
 from PIL import Image
 from dotenv import dotenv_values
 from runtime_paths import get_app_data_path, get_env_file_path
+from utils.safe_log import safe_log
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -22,29 +22,8 @@ OUTPUT_DIR = str(get_app_data_path("ocr_outputs", is_dir=True)) # 识别结果 M
 
 
 def _safe_log(message: object) -> None:
-    """Write logs without crashing on legacy Windows encodings such as GBK."""
-    text = str(message)
-    try:
-        print(text)
-        return
-    except UnicodeEncodeError:
-        pass
-
-    stream = getattr(sys, "stdout", None)
-    if stream is None:
-        return
-
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    payload = (text + "\n").encode(encoding, errors="backslashreplace")
-
-    buffer = getattr(stream, "buffer", None)
-    if buffer is not None:
-        buffer.write(payload)
-        stream.flush()
-        return
-
-    stream.write(payload.decode(encoding, errors="replace"))
-    stream.flush()
+    """Backward-compatible OCR log wrapper."""
+    safe_log(message)
 
 
 def get_ocr_runtime_settings() -> tuple[str, str]:
@@ -208,7 +187,7 @@ def perform_ocr(image_path: str, use_preprocessing: bool = True, is_screen_captu
 
         # 5. 调用云端 API
         _safe_log(f"[OCR] 调用 OCR API: {api_url}")
-        _safe_log(f"[OCR] API Token (前20字符): {api_token[:20] if api_token else 'None'}...")
+        _safe_log("[OCR] API Token: configured")
         _safe_log(f"[OCR] 文件类型: {file_type}")
         _safe_log(f"[OCR] Base64 长度: {len(file_data)}")
 

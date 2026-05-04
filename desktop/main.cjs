@@ -100,6 +100,8 @@ function buildBackendEnv() {
     PROVIEW_API_HOST: API_HOST,
     PROVIEW_API_PORT: String(API_PORT),
     PROVIEW_DESKTOP_MODE: '1',
+    PYTHONIOENCODING: process.env.PYTHONIOENCODING || 'utf-8',
+    PYTHONUTF8: process.env.PYTHONUTF8 || '1',
     PROVIEW_PLAYWRIGHT_CHANNEL: process.env.PROVIEW_PLAYWRIGHT_CHANNEL || 'msedge',
     PROVIEW_APP_DATA_DIR: backendDataDir,
     PROVIEW_ENV_FILE: runtimeEnvFilePath,
