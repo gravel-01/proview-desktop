@@ -120,6 +120,17 @@ class DataServiceClient:
             health["fallback_reason"] = self._fallback_reason
         return health
 
+    def storage_capabilities(self) -> Dict:
+        if hasattr(self._store, "storage_capabilities"):
+            return self._store.storage_capabilities()
+        return {
+            "append_message_returns_id": False,
+            "structured_turns": False,
+            "question_metadata": False,
+            "turn_evaluations": False,
+            "agent_events": False,
+        }
+
     def create_session(
         self,
         session_id: str,
@@ -158,6 +169,14 @@ class DataServiceClient:
     def delete_session(self, session_id: str, user_id) -> bool:
         return self._store.delete_session(session_id, user_id)
 
+    def append_message(self, session_id: str, role: str, content: str) -> Optional[Dict]:
+        if hasattr(self._store, "append_message"):
+            return self._store.append_message(session_id, role, content)
+        ok = self._store.save_message(session_id, role, content)
+        if not ok:
+            return None
+        return {"id": None, "session_id": session_id, "role": role, "content": content, "timestamp": ""}
+
     def save_message(self, session_id: str, role: str, content: str) -> bool:
         return self._store.save_message(session_id, role, content)
 
@@ -172,6 +191,122 @@ class DataServiceClient:
 
     def save_eval_draft(self, session_id: str, draft: dict) -> bool:
         return self._store.save_eval_draft(session_id, draft)
+
+    def create_interview_turn(self, **kwargs) -> Optional[Dict]:
+        if hasattr(self._store, "create_interview_turn"):
+            return self._store.create_interview_turn(**kwargs)
+        return None
+
+    def get_latest_pending_turn(self, session_id: str) -> Optional[Dict]:
+        if hasattr(self._store, "get_latest_pending_turn"):
+            return self._store.get_latest_pending_turn(session_id)
+        return None
+
+    def get_next_turn_no(self, session_id: str) -> int:
+        if hasattr(self._store, "get_next_turn_no"):
+            return self._store.get_next_turn_no(session_id)
+        return 1
+
+    def answer_interview_turn(self, turn_id: str, **kwargs) -> Optional[Dict]:
+        if hasattr(self._store, "answer_interview_turn"):
+            return self._store.answer_interview_turn(turn_id, **kwargs)
+        return None
+
+    def update_interview_turn_status(self, turn_id: str, status: str) -> Optional[Dict]:
+        if hasattr(self._store, "update_interview_turn_status"):
+            return self._store.update_interview_turn_status(turn_id, status)
+        return None
+
+    def skip_pending_turns(self, session_id: str) -> int:
+        if hasattr(self._store, "skip_pending_turns"):
+            return int(self._store.skip_pending_turns(session_id) or 0)
+        return 0
+
+    def get_interview_turn(self, turn_id: str) -> Optional[Dict]:
+        if hasattr(self._store, "get_interview_turn"):
+            return self._store.get_interview_turn(turn_id)
+        return None
+
+    def list_interview_turns(self, session_id: str) -> List[Dict]:
+        if hasattr(self._store, "list_interview_turns"):
+            return self._store.list_interview_turns(session_id)
+        return []
+
+    def save_question_metadata(self, **kwargs) -> Optional[Dict]:
+        if hasattr(self._store, "save_question_metadata"):
+            return self._store.save_question_metadata(**kwargs)
+        return None
+
+    def get_question_metadata(self, turn_id: str) -> Optional[Dict]:
+        if hasattr(self._store, "get_question_metadata"):
+            return self._store.get_question_metadata(turn_id)
+        return None
+
+    def list_question_metadata(self, session_id: str) -> List[Dict]:
+        if hasattr(self._store, "list_question_metadata"):
+            return self._store.list_question_metadata(session_id)
+        return []
+
+    def upsert_turn_evaluation(self, **kwargs) -> Optional[Dict]:
+        if hasattr(self._store, "upsert_turn_evaluation"):
+            return self._store.upsert_turn_evaluation(**kwargs)
+        return None
+
+    def list_turn_evaluations(self, session_id: str) -> List[Dict]:
+        if hasattr(self._store, "list_turn_evaluations"):
+            return self._store.list_turn_evaluations(session_id)
+        return []
+
+    def get_evaluation_coverage_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        if hasattr(self._store, "get_evaluation_coverage_metrics"):
+            return self._store.get_evaluation_coverage_metrics(hours=hours, limit=limit)
+        return {
+            "summary": {
+                "session_count": 0,
+                "turn_count": 0,
+                "answered_turn_count": 0,
+                "evaluating_turn_count": 0,
+                "evaluated_turn_count": 0,
+                "failed_evaluation_count": 0,
+                "skipped_turn_count": 0,
+                "pending_turn_count": 0,
+                "turn_evaluation_count": 0,
+                "evaluation_failure_event_count": 0,
+                "coverage_rate": None,
+                "failure_rate": None,
+                "pending_rate": None,
+            },
+            "sessions": [],
+        }
+
+    def record_agent_event(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        turn_id: str = "",
+        agent_role: str = "",
+        payload: Optional[Dict] = None,
+    ) -> bool:
+        if hasattr(self._store, "record_agent_event"):
+            return self._store.record_agent_event(
+                session_id,
+                event_type,
+                turn_id=turn_id,
+                agent_role=agent_role,
+                payload=payload,
+            )
+        return False
+
+    def list_agent_events(
+        self,
+        session_id: str,
+        event_type: Optional[str] = None,
+        limit: Optional[int] = 100,
+    ) -> List[Dict]:
+        if hasattr(self._store, "list_agent_events"):
+            return self._store.list_agent_events(session_id, event_type=event_type, limit=limit)
+        return []
 
     def save_resume(
         self,

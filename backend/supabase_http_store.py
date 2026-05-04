@@ -426,17 +426,43 @@ class SupabaseHTTPStore:
             print(f"[SupabaseHTTPStore] delete_session failed: {exc}")
             return False
 
-    def save_message(self, session_id: str, role: str, content: str) -> bool:
+    def storage_capabilities(self) -> Dict:
+        return {
+            "append_message_returns_id": True,
+            "structured_turns": False,
+            "question_metadata": False,
+            "turn_evaluations": False,
+            "agent_events": False,
+        }
+
+    def append_message(self, session_id: str, role: str, content: str) -> Optional[Dict]:
         try:
-            self._request(
+            created_at = datetime.now().isoformat()
+            rows = self._request(
                 "POST",
                 "messages",
-                json_body={"session_id": session_id, "role": role, "content": content, "created_at": datetime.now().isoformat()},
-            )
-            return True
+                json_body={
+                    "session_id": session_id,
+                    "role": role,
+                    "content": content,
+                    "created_at": created_at,
+                },
+                prefer="return=representation",
+            ) or []
+            row = rows[0] if isinstance(rows, list) and rows else {}
+            return {
+                "id": row.get("id"),
+                "session_id": row.get("session_id") or session_id,
+                "role": row.get("role") or role,
+                "content": row.get("content") or content,
+                "timestamp": row.get("created_at") or created_at,
+            }
         except Exception as exc:
-            print(f"[SupabaseHTTPStore] save_message failed: {exc}")
-            return False
+            print(f"[SupabaseHTTPStore] append_message failed: {exc}")
+            return None
+
+    def save_message(self, session_id: str, role: str, content: str) -> bool:
+        return self.append_message(session_id, role, content) is not None
 
     def get_session_history(self, session_id: str) -> List[Dict]:
         try:
@@ -493,6 +519,84 @@ class SupabaseHTTPStore:
         except Exception as exc:
             print(f"[SupabaseHTTPStore] save_eval_draft failed: {exc}")
             return False
+
+    def create_interview_turn(self, **kwargs) -> Optional[Dict]:
+        return None
+
+    def get_latest_pending_turn(self, session_id: str) -> Optional[Dict]:
+        return None
+
+    def get_next_turn_no(self, session_id: str) -> int:
+        return 1
+
+    def answer_interview_turn(self, turn_id: str, **kwargs) -> Optional[Dict]:
+        return None
+
+    def update_interview_turn_status(self, turn_id: str, status: str) -> Optional[Dict]:
+        return None
+
+    def skip_pending_turns(self, session_id: str) -> int:
+        return 0
+
+    def get_interview_turn(self, turn_id: str) -> Optional[Dict]:
+        return None
+
+    def list_interview_turns(self, session_id: str) -> List[Dict]:
+        return []
+
+    def save_question_metadata(self, **kwargs) -> Optional[Dict]:
+        return None
+
+    def get_question_metadata(self, turn_id: str) -> Optional[Dict]:
+        return None
+
+    def list_question_metadata(self, session_id: str) -> List[Dict]:
+        return []
+
+    def upsert_turn_evaluation(self, **kwargs) -> Optional[Dict]:
+        return None
+
+    def list_turn_evaluations(self, session_id: str) -> List[Dict]:
+        return []
+
+    def get_evaluation_coverage_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        return {
+            "summary": {
+                "session_count": 0,
+                "turn_count": 0,
+                "answered_turn_count": 0,
+                "evaluating_turn_count": 0,
+                "evaluated_turn_count": 0,
+                "failed_evaluation_count": 0,
+                "skipped_turn_count": 0,
+                "pending_turn_count": 0,
+                "turn_evaluation_count": 0,
+                "evaluation_failure_event_count": 0,
+                "coverage_rate": None,
+                "failure_rate": None,
+                "pending_rate": None,
+            },
+            "sessions": [],
+        }
+
+    def record_agent_event(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        turn_id: str = "",
+        agent_role: str = "",
+        payload: Optional[Dict] = None,
+    ) -> bool:
+        return False
+
+    def list_agent_events(
+        self,
+        session_id: str,
+        event_type: Optional[str] = None,
+        limit: Optional[int] = 100,
+    ) -> List[Dict]:
+        return []
 
     def upload_resume_file(self, session_id: str, file_path: str) -> Optional[Dict]:
         try:

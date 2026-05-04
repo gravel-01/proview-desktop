@@ -5,13 +5,14 @@ import re
 import shutil
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import ForeignKey, Integer, String, Text, create_engine, func, inspect, select, text
+from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -78,6 +79,111 @@ def mask_db_url(url: str) -> str:
         return make_url(url).render_as_string(hide_password=True)
     except Exception:
         return url
+
+
+def _loads_json(raw_value, fallback):
+    if not raw_value:
+        return fallback
+    if isinstance(raw_value, (dict, list)):
+        return raw_value
+    try:
+        return json.loads(raw_value)
+    except Exception:
+        return fallback
+
+
+def _parse_iso_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _empty_evaluation_coverage_metrics() -> Dict:
+    return {
+        "summary": {
+            "session_count": 0,
+            "turn_count": 0,
+            "answered_turn_count": 0,
+            "evaluating_turn_count": 0,
+            "evaluated_turn_count": 0,
+            "failed_evaluation_count": 0,
+            "skipped_turn_count": 0,
+            "pending_turn_count": 0,
+            "turn_evaluation_count": 0,
+            "evaluation_failure_event_count": 0,
+            "coverage_rate": None,
+            "failure_rate": None,
+            "pending_rate": None,
+        },
+        "sessions": [],
+    }
+
+
+def _build_session_evaluation_coverage(
+    *,
+    session,
+    turns,
+    evaluations_by_turn,
+    failure_event_count: int,
+) -> Dict:
+    status_counts = {
+        "pending": 0,
+        "answered": 0,
+        "evaluating": 0,
+        "evaluated": 0,
+        "evaluation_failed": 0,
+        "skipped": 0,
+    }
+    evaluated_turn_ids = set()
+    session_evaluation_count = 0
+    latest_turn_no = 0
+
+    for turn in turns:
+        status = turn.get("status") or "pending"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        latest_turn_no = max(latest_turn_no, int(turn.get("turn_no") or 0))
+        turn_evaluations = evaluations_by_turn.get(turn.get("turn_id"), [])
+        session_evaluation_count += len(turn_evaluations)
+        if status == "evaluated" or turn_evaluations:
+            evaluated_turn_ids.add(turn.get("turn_id"))
+
+    answered_turn_count = sum(
+        status_counts.get(status, 0)
+        for status in ("answered", "evaluating", "evaluated", "evaluation_failed")
+    )
+    evaluated_turn_count = len(evaluated_turn_ids)
+    turn_count = len(turns)
+
+    return {
+        "session_id": session.get("session_id") or "",
+        "candidate_name": session.get("candidate_name") or "",
+        "position": session.get("position") or "",
+        "status": session.get("status") or "",
+        "start_time": session.get("start_time") or "",
+        "end_time": session.get("end_time") or "",
+        "latest_turn_no": latest_turn_no,
+        "turn_count": turn_count,
+        "answered_turn_count": answered_turn_count,
+        "evaluating_turn_count": status_counts.get("evaluating", 0),
+        "evaluated_turn_count": evaluated_turn_count,
+        "failed_evaluation_count": status_counts.get("evaluation_failed", 0),
+        "skipped_turn_count": status_counts.get("skipped", 0),
+        "pending_turn_count": status_counts.get("pending", 0),
+        "turn_evaluation_count": session_evaluation_count,
+        "evaluation_failure_event_count": int(failure_event_count or 0),
+        "coverage_rate": round(evaluated_turn_count / answered_turn_count, 4) if answered_turn_count else None,
+        "failure_rate": (
+            round(status_counts.get("evaluation_failed", 0) / answered_turn_count, 4)
+            if answered_turn_count else None
+        ),
+        "status_counts": status_counts,
+    }
 
 
 def _normalize_text(value: object) -> str:
@@ -152,6 +258,71 @@ class Evaluation(Base):
     score: Mapped[int] = mapped_column(Integer)
     comment: Mapped[str | None] = mapped_column(Text, default="")
     timestamp: Mapped[str] = mapped_column(String(64), default="")
+
+
+class InterviewTurn(Base):
+    __tablename__ = "interview_turns"
+
+    turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_sessions.session_id"), index=True)
+    turn_no: Mapped[int] = mapped_column(Integer, index=True)
+    question_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    answer_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    question_text_snapshot: Mapped[str | None] = mapped_column(Text, default="")
+    answer_text_snapshot: Mapped[str | None] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    created_at: Mapped[str] = mapped_column(String(64), default="")
+    answered_at: Mapped[str | None] = mapped_column(String(64), default=None)
+    updated_at: Mapped[str] = mapped_column(String(64), default="")
+
+
+class QuestionMetadata(Base):
+    __tablename__ = "question_metadata"
+
+    question_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_sessions.session_id"), index=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_turns.turn_id"), unique=True, index=True)
+    turn_no: Mapped[int] = mapped_column(Integer, index=True)
+    question_text_snapshot: Mapped[str | None] = mapped_column(Text, default="")
+    dimensions_json: Mapped[str | None] = mapped_column(Text, default="[]")
+    difficulty: Mapped[str | None] = mapped_column(String(64), default="")
+    question_type: Mapped[str | None] = mapped_column(String(64), default="")
+    source: Mapped[str | None] = mapped_column(String(64), default="")
+    metadata_refs_json: Mapped[str | None] = mapped_column(Text, default="[]")
+    created_at: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[str] = mapped_column(String(64), default="")
+
+
+class TurnEvaluation(Base):
+    __tablename__ = "turn_evaluations"
+    __table_args__ = (
+        UniqueConstraint("turn_id", "dimension", "evaluator_version", name="uq_turn_eval_dimension_version"),
+    )
+
+    evaluation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_sessions.session_id"), index=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_turns.turn_id"), index=True)
+    turn_no: Mapped[int] = mapped_column(Integer, index=True)
+    dimension: Mapped[str] = mapped_column(String(255), default="")
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    pass_level: Mapped[str | None] = mapped_column(String(64), default="")
+    evidence: Mapped[str | None] = mapped_column(Text, default="")
+    suggestion: Mapped[str | None] = mapped_column(Text, default="")
+    evaluator_version: Mapped[str] = mapped_column(String(64), default="eval_observer_v1")
+    created_at: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[str] = mapped_column(String(64), default="")
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("interview_sessions.session_id"), index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    agent_role: Mapped[str | None] = mapped_column(String(64), default="")
+    event_type: Mapped[str] = mapped_column(String(128), index=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(String(64), default="")
 
 
 class Resume(Base):
@@ -299,6 +470,57 @@ class DirectDataStore:
             "file_path": row.file_path,
             "ocr_result": row.ocr_result or "",
             "upload_time": row.upload_time,
+        }
+
+    def _message_to_dict(self, row: ChatMessage) -> Dict:
+        return {
+            "id": row.id,
+            "session_id": row.session_id,
+            "role": row.role,
+            "content": row.content,
+            "timestamp": row.timestamp,
+        }
+
+    def _turn_to_dict(self, row: InterviewTurn) -> Dict:
+        return {
+            "turn_id": row.turn_id,
+            "session_id": row.session_id,
+            "turn_no": row.turn_no,
+            "question_message_id": row.question_message_id,
+            "answer_message_id": row.answer_message_id,
+            "question_text": row.question_text_snapshot or "",
+            "answer_text": row.answer_text_snapshot or "",
+            "status": row.status,
+            "created_at": row.created_at,
+            "answered_at": row.answered_at,
+            "updated_at": row.updated_at,
+        }
+
+    def _question_metadata_to_dict(self, row: QuestionMetadata) -> Dict:
+        return {
+            "question_id": row.question_id,
+            "session_id": row.session_id,
+            "turn_id": row.turn_id,
+            "turn_no": row.turn_no,
+            "question_text": row.question_text_snapshot or "",
+            "dimensions": _loads_json(row.dimensions_json, []),
+            "difficulty": row.difficulty or "",
+            "question_type": row.question_type or "",
+            "source": row.source or "",
+            "metadata_refs": _loads_json(row.metadata_refs_json, []),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    def _agent_event_to_dict(self, row: AgentEvent) -> Dict:
+        return {
+            "event_id": row.event_id,
+            "session_id": row.session_id,
+            "turn_id": row.turn_id or "",
+            "agent_role": row.agent_role or "",
+            "event_type": row.event_type,
+            "payload": _loads_json(row.payload_json, {}),
+            "created_at": row.created_at,
         }
 
     def _detect_resume_user_id_mode(self) -> str:
@@ -468,9 +690,29 @@ class DirectDataStore:
                 eval_rows = db.scalars(
                     select(Evaluation).where(Evaluation.session_id == session_id)
                 ).all()
+                turn_rows = db.scalars(
+                    select(InterviewTurn).where(InterviewTurn.session_id == session_id)
+                ).all()
+                question_metadata_rows = db.scalars(
+                    select(QuestionMetadata).where(QuestionMetadata.session_id == session_id)
+                ).all()
+                turn_eval_rows = db.scalars(
+                    select(TurnEvaluation).where(TurnEvaluation.session_id == session_id)
+                ).all()
+                event_rows = db.scalars(
+                    select(AgentEvent).where(AgentEvent.session_id == session_id)
+                ).all()
 
                 resume_paths = [item.file_path for item in resume_rows if item.file_path]
 
+                for item in turn_eval_rows:
+                    db.delete(item)
+                for item in question_metadata_rows:
+                    db.delete(item)
+                for item in event_rows:
+                    db.delete(item)
+                for item in turn_rows:
+                    db.delete(item)
                 for item in resume_rows:
                     db.delete(item)
                 for item in message_rows:
@@ -486,21 +728,34 @@ class DirectDataStore:
             print(f"[DirectStore] delete_session failed: {exc}")
             return False
 
-    def save_message(self, session_id: str, role: str, content: str) -> bool:
+    def storage_capabilities(self) -> Dict:
+        return {
+            "append_message_returns_id": True,
+            "structured_turns": True,
+            "question_metadata": True,
+            "turn_evaluations": True,
+            "agent_events": True,
+        }
+
+    def append_message(self, session_id: str, role: str, content: str) -> Optional[Dict]:
         try:
+            timestamp = datetime.now().isoformat()
             with self.session() as db:
-                db.add(
-                    ChatMessage(
-                        session_id=session_id,
-                        role=role,
-                        content=content,
-                        timestamp=datetime.now().isoformat(),
-                    )
+                row = ChatMessage(
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    timestamp=timestamp,
                 )
-            return True
+                db.add(row)
+                db.flush()
+                return self._message_to_dict(row)
         except Exception as exc:
-            print(f"[DirectStore] save_message failed: {exc}")
-            return False
+            print(f"[DirectStore] append_message failed: {exc}")
+            return None
+
+    def save_message(self, session_id: str, role: str, content: str) -> bool:
+        return self.append_message(session_id, role, content) is not None
 
     def get_session_history(self, session_id: str) -> List[Dict]:
         try:
@@ -511,7 +766,7 @@ class DirectDataStore:
                     .order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc())
                 ).all()
                 return [
-                    {"role": row.role, "content": row.content, "timestamp": row.timestamp}
+                    {"id": row.id, "role": row.role, "content": row.content, "timestamp": row.timestamp}
                     for row in rows
                 ]
         except Exception as exc:
@@ -589,6 +844,483 @@ class DirectDataStore:
         except Exception as exc:
             print(f"[DirectStore] save_eval_draft failed: {exc}")
             return False
+
+    def create_interview_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        turn_no: int,
+        question_message_id: str = "",
+        question_text: str = "",
+        status: str = "pending",
+    ) -> Optional[Dict]:
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                row = InterviewTurn(
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    turn_no=turn_no,
+                    question_message_id=str(question_message_id or "") or None,
+                    question_text_snapshot=question_text or "",
+                    status=status or "pending",
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(row)
+                db.flush()
+                return self._turn_to_dict(row)
+        except IntegrityError:
+            return None
+        except Exception as exc:
+            print(f"[DirectStore] create_interview_turn failed: {exc}")
+            return None
+
+    def get_latest_pending_turn(self, session_id: str) -> Optional[Dict]:
+        try:
+            with self.session() as db:
+                row = db.scalars(
+                    select(InterviewTurn)
+                    .where(InterviewTurn.session_id == session_id, InterviewTurn.status == "pending")
+                    .order_by(InterviewTurn.turn_no.desc(), InterviewTurn.created_at.desc())
+                    .limit(1)
+                ).first()
+                return self._turn_to_dict(row) if row else None
+        except Exception as exc:
+            print(f"[DirectStore] get_latest_pending_turn failed: {exc}")
+            return None
+
+    def get_next_turn_no(self, session_id: str) -> int:
+        try:
+            with self.session() as db:
+                current_max = db.scalar(
+                    select(func.max(InterviewTurn.turn_no)).where(InterviewTurn.session_id == session_id)
+                ) or 0
+                return int(current_max) + 1
+        except Exception as exc:
+            print(f"[DirectStore] get_next_turn_no failed: {exc}")
+            return 1
+
+    def answer_interview_turn(
+        self,
+        turn_id: str,
+        *,
+        answer_message_id: str = "",
+        answer_text: str = "",
+    ) -> Optional[Dict]:
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                row = db.get(InterviewTurn, turn_id)
+                if not row:
+                    return None
+                row.answer_message_id = str(answer_message_id or "") or None
+                row.answer_text_snapshot = answer_text or ""
+                row.status = "answered"
+                row.answered_at = now
+                row.updated_at = now
+                db.flush()
+                return self._turn_to_dict(row)
+        except Exception as exc:
+            print(f"[DirectStore] answer_interview_turn failed: {exc}")
+            return None
+
+    def update_interview_turn_status(self, turn_id: str, status: str) -> Optional[Dict]:
+        allowed = {"pending", "answered", "evaluating", "evaluated", "evaluation_failed", "skipped"}
+        if status not in allowed:
+            return None
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                row = db.get(InterviewTurn, turn_id)
+                if not row:
+                    return None
+                row.status = status
+                row.updated_at = now
+                db.flush()
+                return self._turn_to_dict(row)
+        except Exception as exc:
+            print(f"[DirectStore] update_interview_turn_status failed: {exc}")
+            return None
+
+    def skip_pending_turns(self, session_id: str) -> int:
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                rows = db.scalars(
+                    select(InterviewTurn)
+                    .where(InterviewTurn.session_id == session_id, InterviewTurn.status == "pending")
+                    .order_by(InterviewTurn.turn_no.asc(), InterviewTurn.created_at.asc())
+                ).all()
+                skipped = 0
+                for row in rows:
+                    if (row.answer_text_snapshot or "").strip():
+                        continue
+                    row.status = "skipped"
+                    row.updated_at = now
+                    skipped += 1
+                return skipped
+        except Exception as exc:
+            print(f"[DirectStore] skip_pending_turns failed: {exc}")
+            return 0
+
+    def get_interview_turn(self, turn_id: str) -> Optional[Dict]:
+        try:
+            with self.session() as db:
+                row = db.get(InterviewTurn, turn_id)
+                return self._turn_to_dict(row) if row else None
+        except Exception as exc:
+            print(f"[DirectStore] get_interview_turn failed: {exc}")
+            return None
+
+    def list_interview_turns(self, session_id: str) -> List[Dict]:
+        try:
+            with self.session() as db:
+                rows = db.scalars(
+                    select(InterviewTurn)
+                    .where(InterviewTurn.session_id == session_id)
+                    .order_by(InterviewTurn.turn_no.asc(), InterviewTurn.created_at.asc())
+                ).all()
+                return [self._turn_to_dict(row) for row in rows]
+        except Exception as exc:
+            print(f"[DirectStore] list_interview_turns failed: {exc}")
+            return []
+
+    def save_question_metadata(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        turn_no: int,
+        question_text: str = "",
+        dimensions: Optional[List[Dict]] = None,
+        difficulty: str = "",
+        question_type: str = "",
+        source: str = "",
+        metadata_refs: Optional[List[Dict]] = None,
+    ) -> Optional[Dict]:
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                row = db.scalar(select(QuestionMetadata).where(QuestionMetadata.turn_id == turn_id))
+                if not row:
+                    row = QuestionMetadata(
+                        question_id=uuid.uuid4().hex,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        turn_no=turn_no,
+                        created_at=now,
+                    )
+                    db.add(row)
+                row.question_text_snapshot = question_text or ""
+                row.dimensions_json = json.dumps(dimensions or [], ensure_ascii=False)
+                row.difficulty = difficulty or ""
+                row.question_type = question_type or ""
+                row.source = source or ""
+                row.metadata_refs_json = json.dumps(metadata_refs or [], ensure_ascii=False)
+                row.updated_at = now
+                db.flush()
+                return self._question_metadata_to_dict(row)
+        except Exception as exc:
+            print(f"[DirectStore] save_question_metadata failed: {exc}")
+            return None
+
+    def get_question_metadata(self, turn_id: str) -> Optional[Dict]:
+        try:
+            with self.session() as db:
+                row = db.scalar(select(QuestionMetadata).where(QuestionMetadata.turn_id == turn_id))
+                return self._question_metadata_to_dict(row) if row else None
+        except Exception as exc:
+            print(f"[DirectStore] get_question_metadata failed: {exc}")
+            return None
+
+    def list_question_metadata(self, session_id: str) -> List[Dict]:
+        try:
+            with self.session() as db:
+                rows = db.scalars(
+                    select(QuestionMetadata)
+                    .where(QuestionMetadata.session_id == session_id)
+                    .order_by(QuestionMetadata.turn_no.asc(), QuestionMetadata.created_at.asc())
+                ).all()
+                return [self._question_metadata_to_dict(row) for row in rows]
+        except Exception as exc:
+            print(f"[DirectStore] list_question_metadata failed: {exc}")
+            return []
+
+    def upsert_turn_evaluation(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        turn_no: int,
+        dimension: str,
+        score: int,
+        pass_level: str = "",
+        evidence: str = "",
+        suggestion: str = "",
+        evaluator_version: str = "eval_observer_v1",
+    ) -> Optional[Dict]:
+        try:
+            now = datetime.now().isoformat()
+            with self.session() as db:
+                row = db.scalar(
+                    select(TurnEvaluation).where(
+                        TurnEvaluation.turn_id == turn_id,
+                        TurnEvaluation.dimension == dimension,
+                        TurnEvaluation.evaluator_version == evaluator_version,
+                    )
+                )
+                if not row:
+                    row = TurnEvaluation(
+                        evaluation_id=uuid.uuid4().hex,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        turn_no=turn_no,
+                        dimension=dimension,
+                        evaluator_version=evaluator_version,
+                        created_at=now,
+                    )
+                    db.add(row)
+                row.score = int(score or 0)
+                row.pass_level = pass_level or ""
+                row.evidence = evidence or ""
+                row.suggestion = suggestion or ""
+                row.updated_at = now
+                db.flush()
+                return {
+                    "evaluation_id": row.evaluation_id,
+                    "session_id": row.session_id,
+                    "turn_id": row.turn_id,
+                    "turn_no": row.turn_no,
+                    "dimension": row.dimension,
+                    "score": row.score,
+                    "pass_level": row.pass_level or "",
+                    "evidence": row.evidence or "",
+                    "suggestion": row.suggestion or "",
+                    "evaluator_version": row.evaluator_version,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }
+        except Exception as exc:
+            print(f"[DirectStore] upsert_turn_evaluation failed: {exc}")
+            return None
+
+    def list_turn_evaluations(self, session_id: str) -> List[Dict]:
+        try:
+            with self.session() as db:
+                rows = db.scalars(
+                    select(TurnEvaluation)
+                    .where(TurnEvaluation.session_id == session_id)
+                    .order_by(TurnEvaluation.turn_no.asc(), TurnEvaluation.dimension.asc())
+                ).all()
+                return [
+                    {
+                        "evaluation_id": row.evaluation_id,
+                        "session_id": row.session_id,
+                        "turn_id": row.turn_id,
+                        "turn_no": row.turn_no,
+                        "dimension": row.dimension,
+                        "score": row.score,
+                        "pass_level": row.pass_level or "",
+                        "evidence": row.evidence or "",
+                        "suggestion": row.suggestion or "",
+                        "evaluator_version": row.evaluator_version,
+                        "created_at": row.created_at,
+                        "updated_at": row.updated_at,
+                    }
+                    for row in rows
+                ]
+        except Exception as exc:
+            print(f"[DirectStore] list_turn_evaluations failed: {exc}")
+            return []
+
+    def get_evaluation_coverage_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        try:
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            with self.session() as db:
+                stmt = select(InterviewSession).order_by(InterviewSession.start_time.desc())
+                if cutoff is not None:
+                    sessions = [
+                        row for row in db.scalars(stmt).all()
+                        if _parse_iso_datetime(row.start_time) is None
+                        or _parse_iso_datetime(row.start_time) >= cutoff
+                    ]
+                else:
+                    sessions = db.scalars(stmt).all()
+                if limit is not None and int(limit) > 0:
+                    sessions = sessions[: int(limit)]
+
+                session_rows = [
+                    {
+                        "session_id": row.session_id,
+                        "candidate_name": row.candidate_name or "",
+                        "position": row.position or "",
+                        "status": row.status or "",
+                        "start_time": row.start_time or "",
+                        "end_time": row.end_time or "",
+                    }
+                    for row in sessions
+                ]
+                session_ids = [row["session_id"] for row in session_rows]
+                if not session_ids:
+                    return _empty_evaluation_coverage_metrics()
+
+                turn_rows = db.scalars(
+                    select(InterviewTurn)
+                    .where(InterviewTurn.session_id.in_(session_ids))
+                    .order_by(InterviewTurn.session_id.asc(), InterviewTurn.turn_no.asc())
+                ).all()
+                turns = [
+                    {
+                        "turn_id": row.turn_id,
+                        "session_id": row.session_id,
+                        "turn_no": row.turn_no,
+                        "status": row.status or "pending",
+                    }
+                    for row in turn_rows
+                ]
+                evaluation_rows = db.scalars(
+                    select(TurnEvaluation).where(TurnEvaluation.session_id.in_(session_ids))
+                ).all()
+                evaluations = [
+                    {
+                        "turn_id": row.turn_id,
+                        "session_id": row.session_id,
+                    }
+                    for row in evaluation_rows
+                ]
+                event_rows = db.scalars(
+                    select(AgentEvent).where(AgentEvent.session_id.in_(session_ids))
+                ).all()
+                events = [
+                    {
+                        "session_id": row.session_id,
+                        "event_type": row.event_type,
+                    }
+                    for row in event_rows
+                ]
+
+            evaluations_by_turn = defaultdict(list)
+            for item in evaluations:
+                evaluations_by_turn[item["turn_id"]].append(item)
+
+            events_by_session = defaultdict(int)
+            for item in events:
+                if item["event_type"] == "turn_evaluation_failed":
+                    events_by_session[item["session_id"]] += 1
+
+            turns_by_session = defaultdict(list)
+            for item in turns:
+                turns_by_session[item["session_id"]].append(item)
+
+            sessions_payload = []
+            summary = {
+                "session_count": len(session_rows),
+                "turn_count": 0,
+                "answered_turn_count": 0,
+                "evaluating_turn_count": 0,
+                "evaluated_turn_count": 0,
+                "failed_evaluation_count": 0,
+                "skipped_turn_count": 0,
+                "pending_turn_count": 0,
+                "turn_evaluation_count": len(evaluations),
+                "evaluation_failure_event_count": sum(events_by_session.values()),
+            }
+
+            for session in session_rows:
+                session_turns = turns_by_session.get(session["session_id"], [])
+                session_metrics = _build_session_evaluation_coverage(
+                    session=session,
+                    turns=session_turns,
+                    evaluations_by_turn=evaluations_by_turn,
+                    failure_event_count=events_by_session.get(session["session_id"], 0),
+                )
+                sessions_payload.append(session_metrics)
+                for key in (
+                    "turn_count",
+                    "answered_turn_count",
+                    "evaluating_turn_count",
+                    "evaluated_turn_count",
+                    "failed_evaluation_count",
+                    "skipped_turn_count",
+                    "pending_turn_count",
+                ):
+                    summary[key] += session_metrics[key]
+
+            denominator = summary["answered_turn_count"]
+            summary["coverage_rate"] = (
+                round(summary["evaluated_turn_count"] / denominator, 4)
+                if denominator else None
+            )
+            summary["failure_rate"] = (
+                round(summary["failed_evaluation_count"] / denominator, 4)
+                if denominator else None
+            )
+            summary["pending_rate"] = (
+                round(summary["pending_turn_count"] / summary["turn_count"], 4)
+                if summary["turn_count"] else None
+            )
+
+            return {
+                "summary": summary,
+                "sessions": sessions_payload,
+            }
+        except Exception as exc:
+            print(f"[DirectStore] get_evaluation_coverage_metrics failed: {exc}")
+            return _empty_evaluation_coverage_metrics()
+
+    def record_agent_event(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        turn_id: str = "",
+        agent_role: str = "",
+        payload: Optional[Dict] = None,
+    ) -> bool:
+        try:
+            with self.session() as db:
+                db.add(
+                    AgentEvent(
+                        event_id=uuid.uuid4().hex,
+                        session_id=session_id,
+                        turn_id=turn_id or None,
+                        agent_role=agent_role or "",
+                        event_type=event_type,
+                        payload_json=json.dumps(payload or {}, ensure_ascii=False),
+                        created_at=datetime.now().isoformat(),
+                    )
+                )
+            return True
+        except Exception as exc:
+            print(f"[DirectStore] record_agent_event failed: {exc}")
+            return False
+
+    def list_agent_events(
+        self,
+        session_id: str,
+        event_type: Optional[str] = None,
+        limit: Optional[int] = 100,
+    ) -> List[Dict]:
+        try:
+            if limit is not None and limit <= 0:
+                return []
+            with self.session() as db:
+                stmt = select(AgentEvent).where(AgentEvent.session_id == session_id)
+                if event_type:
+                    stmt = stmt.where(AgentEvent.event_type == event_type)
+                stmt = stmt.order_by(AgentEvent.created_at.desc(), AgentEvent.event_id.desc())
+                if limit is not None:
+                    stmt = stmt.limit(limit)
+                rows = db.scalars(stmt).all()
+                return [self._agent_event_to_dict(row) for row in rows]
+        except Exception as exc:
+            print(f"[DirectStore] list_agent_events failed: {exc}")
+            return []
 
     def upload_resume_file(self, session_id: str, file_path: str) -> Optional[Dict]:
         try:
