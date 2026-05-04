@@ -96,6 +96,36 @@ export interface SessionStats {
   avg_score: number
 }
 
+export interface FinalReportEvidence {
+  turn_no?: number
+  turn_id?: string
+  dimension: string
+  score?: number
+  pass_level?: string
+  evidence: string
+  suggestion?: string
+}
+
+export interface FinalReportDimensionScore {
+  dimension: string
+  score: number
+  pass_level?: string
+  evidence?: string
+  turns?: number[]
+  comment?: string
+}
+
+export interface FinalReport {
+  overall_score: number
+  hire_recommendation: string
+  dimension_scores: FinalReportDimensionScore[]
+  strengths: string[]
+  weaknesses: string[]
+  evidence: FinalReportEvidence[]
+  next_training_plan: string[]
+  summary: string
+}
+
 export interface SetupResponse {
   status: string
   token: string
@@ -122,6 +152,12 @@ export interface EndResponse {
   strengths?: string
   weaknesses?: string
   summary?: string
+  overall_score?: number
+  hire_recommendation?: string
+  dimension_scores?: FinalReportDimensionScore[]
+  evidence?: FinalReportEvidence[]
+  next_training_plan?: string[]
+  report?: FinalReport
   quota?: HistoryQuota
 }
 

@@ -7,7 +7,7 @@ import BlobBackground from './components/BlobBackground.vue'
 import {
   Bot, Settings,
   Sun, Moon, ArrowLeft, MessageSquare, BookOpen, Sparkles, FilePlus2, History, FileUser, ChevronLeft,
-  SlidersHorizontal, ClipboardList, Map as MapIcon, Check, GripVertical
+  SlidersHorizontal, ClipboardList, Map as MapIcon, Check, GripVertical, Activity
 } from 'lucide-vue-next'
 
 const CatLoading = defineAsyncComponent(() => import('./components/CatLoading.vue'))
@@ -60,7 +60,7 @@ type ItemRenderEntry =
 const defaultGroupOrder: SortableGroup[] = ['面试流程', '工具箱']
 const defaultItemOrder: Record<SortableGroup, string[]> = {
   '面试流程': ['setup', 'history', 'interview', 'report', 'summary'],
-  '工具箱': ['resume-optimizer', 'resume-builder', 'my-resumes', 'career-planning'],
+  '工具箱': ['resume-optimizer', 'resume-builder', 'my-resumes', 'career-planning', 'monitoring'],
 }
 const isNavSortMode = ref(false)
 const navGroupOrder = ref<SortableGroup[]>([...defaultGroupOrder])
@@ -145,6 +145,7 @@ const routeLoadingMessageMap: Record<string, string> = {
   'resume-optimizer': '正在加载简历优化页...',
   'resume-builder': '正在加载简历生成页...',
   'my-resumes': '正在加载我的简历...',
+  monitoring: '正在加载运行监控...',
   'career-planning': '正在加载职业规划工作台...',
   'career-planning-overview': '正在加载职业规划总览页...',
   'career-planning-roadmap': '正在加载职业规划路线图页...',
@@ -233,6 +234,7 @@ const navItemsSource = computed<NavItem[]>(() => [
   { name: 'resume-builder', icon: FilePlus2, label: '简历生成', path: '/resume-builder', group: '工具箱' },
   { name: 'my-resumes', icon: FileUser, label: '我的简历', path: '/my-resumes', group: '工具箱' },
   { name: 'career-planning', icon: MapIcon, label: '职业规划', routeName: 'career-planning-overview', path: '/career-planning/overview', group: '工具箱' },
+  { name: 'monitoring', icon: Activity, label: '运行监控', path: '/monitoring', group: '工具箱' },
 ])
 
 const settingsNavItem = { name: 'runtime-config', icon: Settings, label: '应用设置', path: '/config' }
@@ -272,6 +274,7 @@ const currentNav = computed(() => {
   if (route.name === 'resume-optimizer') return 'resume-optimizer'
   if (route.name === 'resume-builder') return 'resume-builder'
   if (route.name === 'my-resumes') return 'my-resumes'
+  if (route.name === 'monitoring') return 'monitoring'
   if (typeof route.name === 'string' && route.name.startsWith('career-planning')) return 'career-planning'
   return 'setup'
 })
