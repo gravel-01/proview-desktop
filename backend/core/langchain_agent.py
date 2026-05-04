@@ -9,6 +9,17 @@ import traceback
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
+try:
+    from utils.safe_log import safe_log
+except Exception:
+    backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_root not in sys.path:
+        sys.path.insert(0, backend_root)
+    from utils.safe_log import safe_log
+
+# Keep legacy diagnostic prints from interrupting desktop flows on GBK consoles.
+print = safe_log
+
 # 1. 尝试导入本地的 llm_client（支持作为脚本或包两种导入方式）
 OpenAICompatibleClient = None
 try:
@@ -31,6 +42,15 @@ except Exception:
         from prompt_manager import PromptManager
     except Exception:
         PromptManager = None
+
+try:
+    from core.langfuse_tracing import merge_langfuse_callback_config
+except Exception:
+    try:
+        from .langfuse_tracing import merge_langfuse_callback_config
+    except Exception:
+        def merge_langfuse_callback_config(config=None):
+            return config
 
 # 3. 尝试导入 langchain 的标准组件
 HAVE_LANGCHAIN = False
@@ -132,6 +152,7 @@ class LangChainInterviewAgent:
         self.role = role
         self.llm_client = llm_client
         self.chat_history: List[Dict[str, str]] = []
+        self._agent_executor_hidden_context_mode = ""
 
         # 初始化动态 Prompt 管理器
         self.prompt_manager = PromptManager() if PromptManager else None
@@ -164,6 +185,7 @@ class LangChainInterviewAgent:
         if ConversationBufferMemory is not None:
             self.memory = ConversationBufferMemory(
                 memory_key="chat_history",
+                input_key="input",
                 return_messages=True,
                 output_key="output"
             )
@@ -196,6 +218,7 @@ class LangChainInterviewAgent:
     def _build_agent_executor(self, temperature: float = 0.7):
         """构建或重载真正的带工具的 Agent 执行器"""
         local_has_langchain = HAVE_LANGCHAIN and (ChatOpenAI is not None)
+        self._agent_executor_hidden_context_mode = ""
 
         if local_has_langchain:
             try:
@@ -211,6 +234,7 @@ class LangChainInterviewAgent:
                     # 新版 LangChain (>= 0.1.0)
                     prompt = ChatPromptTemplate.from_messages([
                         ("system", self.prompt),
+                        MessagesPlaceholder(variable_name="hidden_context", optional=True),
                         MessagesPlaceholder(variable_name="chat_history", optional=True),
                         ("human", "{input}"),
                         MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -224,6 +248,7 @@ class LangChainInterviewAgent:
                         memory=self.memory,
                         handle_parsing_errors=True
                     )
+                    self._agent_executor_hidden_context_mode = "messages"
                 elif initialize_agent_fn is not None and AgentTypeEnum is not None:
                     # 旧版 LangChain (< 0.1.0) - 使用 initialize_agent
                     system_message = SystemMessage(content=self.prompt)
@@ -257,8 +282,12 @@ class LangChainInterviewAgent:
                     self.system_prompt = system_prompt
                     self.parent_agent = parent_agent
 
-                def invoke(self, inputs: dict):
+                supports_hidden_context = True
+                hidden_context_mode = "system"
+
+                def invoke(self, inputs: dict, config: Optional[dict] = None, **kwargs):
                     full = inputs.get("input") if isinstance(inputs, dict) else str(inputs)
+                    hidden_context = inputs.get("_hidden_context", "") if isinstance(inputs, dict) else ""
 
                     # 记录降级模式的调试信息
                     fallback_step = {
@@ -270,6 +299,8 @@ class LangChainInterviewAgent:
 
                     if self.llm_client is not None:
                         messages = [{"role": "system", "content": self.system_prompt}]
+                        if hidden_context:
+                            messages.append({"role": "system", "content": hidden_context})
                         messages.extend(self.parent_agent.chat_history)
                         messages.append({"role": "user", "content": full})
                         try:
@@ -284,6 +315,7 @@ class LangChainInterviewAgent:
                         return {"output": f"（严重错误）缺少 langchain 且 llm_client 未初始化。收到输入：{full}", "intermediate_steps": [fallback_step]}
 
             self.agent_executor = _FallbackExecutor(self.llm_client, self.prompt, self)
+            self._agent_executor_hidden_context_mode = "system"
             if self.verbose:
                 print("Warning: Agent started in fallback mode without tool support.")
 
@@ -320,15 +352,37 @@ class LangChainInterviewAgent:
         styles = self.prompt_config.get("styles", {})
         return list(styles.keys())
 
-    def run(self, query: str, context: Optional[str] = None) -> Tuple[str, List[Dict]]:
+    def run(
+        self,
+        query: str,
+        context: Optional[str] = None,
+        trace_context: Optional[dict] = None,
+    ) -> Tuple[str, List[Dict]]:
+        visible_input = query
         full_input = f"{context}\n\n{query}" if context else query
 
         try:
             if self.agent_executor:
                 # AgentExecutor 接收 dict 格式输入
-                result = self.agent_executor.invoke({"input": full_input})
+                run_config = merge_langfuse_callback_config(trace_context=trace_context)
+                hidden_context_mode = self._agent_executor_hidden_context_mode
+                if context and hidden_context_mode == "messages" and SystemMessage is not None:
+                    invoke_payload = {
+                        "input": visible_input,
+                        "hidden_context": [SystemMessage(content=context)],
+                    }
+                elif context and hidden_context_mode == "system":
+                    invoke_payload = {"input": visible_input, "_hidden_context": context}
+                else:
+                    invoke_payload = {"input": full_input}
+                if run_config:
+                    result = self.agent_executor.invoke(invoke_payload, config=run_config)
+                else:
+                    result = self.agent_executor.invoke(invoke_payload)
                 response = result.get("output", "抱歉，我没有生成有效的回应。")
                 raw_steps = result.get("intermediate_steps", [])
+                if context:
+                    self._scrub_latest_memory_user_message(full_input, visible_input)
             else:
                 response = "Agent 尚未正确初始化。"
                 raw_steps = []
@@ -347,7 +401,7 @@ class LangChainInterviewAgent:
                 else:
                     intermediate_steps.append({"raw": str(step)})
 
-            self._add_to_history({"role": "user", "content": full_input})
+            self._add_to_history({"role": "user", "content": visible_input})
             self._add_to_history({"role": "assistant", "content": response})
             return response, intermediate_steps
 
@@ -363,12 +417,12 @@ class LangChainInterviewAgent:
         yield ("thinking", chunk) — 思维链片段
         yield ("content", chunk) — 正式回复片段
         """
-        full_input = f"{context}\n\n{query}" if context else query
-
         # 构建消息列表
         messages = [{"role": "system", "content": self.prompt}]
+        if context:
+            messages.append({"role": "system", "content": context})
         messages.extend(self.chat_history)
-        messages.append({"role": "user", "content": full_input})
+        messages.append({"role": "user", "content": query})
 
         response_text = ""
         try:
@@ -393,7 +447,7 @@ class LangChainInterviewAgent:
                 yield ("content", response_text)
 
         # 记录到对话历史
-        self._add_to_history({"role": "user", "content": full_input})
+        self._add_to_history({"role": "user", "content": query})
         self._add_to_history({"role": "assistant", "content": response_text})
 
     def _add_to_history(self, message: Dict[str, str]):
@@ -402,6 +456,20 @@ class LangChainInterviewAgent:
             max_messages = self.max_history_turns * 2
             if len(self.chat_history) > max_messages:
                 self.chat_history = self.chat_history[-max_messages:]
+
+    def _scrub_latest_memory_user_message(self, hidden_input: str, visible_input: str) -> None:
+        memory = getattr(self, "memory", None)
+        chat_memory = getattr(memory, "chat_memory", None)
+        messages = getattr(chat_memory, "messages", None)
+        if not isinstance(messages, list):
+            return
+        for message in reversed(messages):
+            if getattr(message, "content", None) == hidden_input:
+                try:
+                    message.content = visible_input
+                except Exception:
+                    pass
+                return
 
     def reset_memory(self):
         self.chat_history.clear()
@@ -646,46 +714,124 @@ class LangChainInterviewAgent:
 
 
 if __name__ == "__main__":
-    # 测试代码
-    load_dotenv()
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    url = "https://api.deepseek.com/v1"
+    try:
+        from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, reload_runtime_settings
 
-    # 颜色代码
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    GRAY = '\033[90m'
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
+        reload_runtime_settings()
+        api_key = DEEPSEEK_API_KEY
+        base_url = DEEPSEEK_BASE_URL
+    except Exception:
+        load_dotenv()
+        api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 
-    print(f"{GREEN}{BOLD}=== 测试 LangChain Interview Agent ==={RESET}\n")
+    try:
+        from langchain.tools import Tool
+    except Exception:
+        try:
+            from langchain_core.tools import Tool
+        except Exception:
+            Tool = None
 
-    # 创建面试官 Agent
+    try:
+        from core.langfuse_tracing import get_langfuse_callback_handler
+    except Exception:
+        try:
+            from langfuse_tracing import get_langfuse_callback_handler
+        except Exception:
+            def get_langfuse_callback_handler():
+                return None
+
+    def demo_candidate_profile(candidate_name: str) -> str:
+        """Return a deterministic candidate profile for Langfuse agent tracing demos."""
+        raw_name = str(candidate_name or "").strip()
+        try:
+            parsed = json.loads(raw_name)
+            if isinstance(parsed, dict):
+                raw_name = parsed.get("candidate_name") or parsed.get("name") or raw_name
+        except Exception:
+            pass
+        raw_name = raw_name.strip().strip('"').strip("'") or "张三"
+        return (
+            f"{raw_name} 的候选人画像：3 年 Python 后端经验，"
+            "熟悉 FastAPI、SQLAlchemy、Redis 和异步任务处理；"
+            "最近项目是 AI 面试系统，负责 Agent 编排、LLM 调用和可观测性建设。"
+        )
+
+    print("=== Langfuse LangChain Agent Tool Trace Demo ===")
+    print(f"LangChain available: {HAVE_LANGCHAIN}")
+    print(f"ChatOpenAI available: {ChatOpenAI is not None}")
+    print(f"Tool available: {Tool is not None}")
+    print(f"ReAct agent available: {initialize_agent_fn is not None and AgentTypeEnum is not None}")
+    print(f"Langfuse callback enabled: {get_langfuse_callback_handler() is not None}")
+    print(f"LLM API key configured: {bool(api_key)}")
+    print(f"LLM base_url: {base_url}")
+    print()
+
     interviewer = LangChainInterviewAgent(
         api_key=api_key,
-        base_url=url,
+        base_url=base_url,
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         verbose=True,
-        max_history_turns=5,
-        role="interviewer"
+        max_history_turns=3,
+        role="interviewer",
     )
 
-    # 显示可用的面试风格
-    print(f"{GRAY}可用的面试风格: {interviewer.get_available_styles()}{RESET}\n")
+    if (
+        Tool is not None
+        and ChatOpenAI is not None
+        and initialize_agent_fn is not None
+        and AgentTypeEnum is not None
+    ):
+        demo_tool = Tool.from_function(
+            func=demo_candidate_profile,
+            name="demo_candidate_profile",
+            description=(
+                "Use this first to look up a candidate profile. "
+                "Input must be the candidate name as plain text, for example: 张三."
+            ),
+        )
+        interviewer.tools = [demo_tool]
+        react_llm = ChatOpenAI(
+            model=interviewer.model_name,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0,
+        )
+        interviewer.agent_executor = initialize_agent_fn(
+            tools=[demo_tool],
+            llm=react_llm,
+            agent=AgentTypeEnum.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=True,
+            handle_parsing_errors=True,
+            return_intermediate_steps=True,
+            max_iterations=3,
+            agent_kwargs={
+                "prefix": (
+                    "You are a Python backend technical interviewer. "
+                    "You must use demo_candidate_profile before answering any question about a candidate. "
+                    "After using the tool, answer in Chinese with one concise interview opening and one concrete question."
+                )
+            },
+        )
+        print("Using ReAct Agent demo so LangChain can execute a real tool call without OpenAI function calling.")
+    else:
+        print("ReAct demo dependencies are unavailable; this run can only demonstrate LLM tracing, not tool tracing.")
 
-    # 测试默认风格
-    print(f"{GREEN}=== 测试默认风格 ==={RESET}")
-    print(f"{CYAN}{BOLD}面试官问候: {interviewer.get_greeting()}{RESET}\n")
+    test_query = (
+        "You must use the demo_candidate_profile tool first. "
+        "Candidate name: 张三. After the observation, answer in Chinese and ask one Python backend interview question."
+    )
+    print("=== Test Query ===")
+    print(test_query)
+    print()
 
-    response, _ = interviewer.run("你好，我想面试后端开发岗位")
-    print(f"{CYAN}{BOLD}面试官: {response}{RESET}\n")
-    print(f"{GRAY}当前历史轮数: {len(interviewer.get_chat_history()) // 2}{RESET}\n")
+    response, steps = interviewer.run(test_query)
 
-    response, _ = interviewer.run("我有3年Java开发经验，做过电商系统")
-    print(f"{CYAN}{BOLD}面试官: {response}{RESET}\n")
-    print(f"{GRAY}当前历史轮数: {len(interviewer.get_chat_history()) // 2}{RESET}\n")
-
-    # 查看历史记录
-    print(f"\n{GREEN}=== 面试官对话历史 ==={RESET}")
-    for i, msg in enumerate(interviewer.get_chat_history()[-6:]):  # 只显示最近3轮
-        color = CYAN if msg['role'] == 'assistant' else GRAY
-        print(f"{GRAY}{i+1}. [{msg['role']}]: {color}{msg['content'][:80]}...{RESET}")
+    print("=== Agent Response ===")
+    print(response)
+    print()
+    print("=== Intermediate Steps ===")
+    print(json.dumps(steps, ensure_ascii=False, indent=2))
+    print()
+    print("If Langfuse callback enabled=True, open Langfuse and inspect this trace's AgentExecutor, LLM, and tool spans.")
