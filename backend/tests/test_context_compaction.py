@@ -1,4 +1,6 @@
 import os
+import json
+import shutil
 import sys
 import unittest
 
@@ -120,6 +122,11 @@ class ContextCompactionTests(unittest.TestCase):
         self.original_data_client = app_module.data_client
         self.original_checkpoints = dict(app_module._session_context_checkpoints)
         self.original_trace_contexts = dict(app_module._session_trace_contexts)
+        self.original_checkpoint_dir = os.environ.get("PROVIEW_CONTEXT_CHECKPOINT_DIR")
+        self.checkpoint_dir = os.path.join(os.path.dirname(__file__), ".codex_tmp_context_checkpoints")
+        shutil.rmtree(self.checkpoint_dir, ignore_errors=True)
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        os.environ["PROVIEW_CONTEXT_CHECKPOINT_DIR"] = self.checkpoint_dir
         app_module.STORAGE_AVAILABLE = True
         app_module._session_context_checkpoints.clear()
         app_module._session_trace_contexts.clear()
@@ -132,6 +139,11 @@ class ContextCompactionTests(unittest.TestCase):
         app_module._session_context_checkpoints.update(self.original_checkpoints)
         app_module._session_trace_contexts.clear()
         app_module._session_trace_contexts.update(self.original_trace_contexts)
+        if self.original_checkpoint_dir is None:
+            os.environ.pop("PROVIEW_CONTEXT_CHECKPOINT_DIR", None)
+        else:
+            os.environ["PROVIEW_CONTEXT_CHECKPOINT_DIR"] = self.original_checkpoint_dir
+        shutil.rmtree(self.checkpoint_dir, ignore_errors=True)
 
     def test_context_compaction_builds_hidden_memory_card_and_event(self):
         client = MockContextCompactionDataClient(answer_size=900)
@@ -151,6 +163,26 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIn("risk_signals", client.events[0]["payload"])
         self.assertIn("open_threads", client.events[0]["payload"])
         self.assertEqual(app_module._session_trace_contexts["session-1"]["context_version"], 2)
+
+    def test_context_compaction_writes_checkpoint_file_mirror(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        app_module.data_client = client
+
+        app_module._build_context_compaction_context("session-1")
+
+        checkpoint_dir = os.path.join(self.checkpoint_dir, "session-1", "context_checkpoints")
+        latest_path = os.path.join(checkpoint_dir, "latest.json")
+        versioned_path = os.path.join(checkpoint_dir, "checkpoint_002_turn_007.json")
+        with open(latest_path, encoding="utf-8") as handle:
+            latest = json.load(handle)
+
+        self.assertTrue(os.path.exists(versioned_path))
+        self.assertEqual(latest["schema_version"], "context_checkpoint_v1")
+        self.assertEqual(latest["session_id"], "session-1")
+        self.assertEqual(latest["context_version"], 2)
+        self.assertEqual(latest["last_turn_no"], 7)
+        self.assertIn("隐藏长期记忆卡", latest["hidden_memory_card"])
+        self.assertIn("candidate_facts", latest["checkpoint"])
 
     def test_context_compaction_reuses_checkpoint_without_duplicate_event(self):
         client = MockContextCompactionDataClient(answer_size=900)
@@ -175,6 +207,20 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertEqual(client.list_agent_event_calls[-1]["event_type"], "context_compacted")
         self.assertEqual(app_module._session_context_checkpoints["session-1"]["last_turn_no"], 7)
         self.assertEqual(app_module._session_trace_contexts["session-1"]["context_version"], 2)
+
+    def test_context_compaction_rehydrate_does_not_rewrite_checkpoint_file(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        app_module.data_client = client
+
+        app_module._build_context_compaction_context("session-1")
+        checkpoint_dir = os.path.join(self.checkpoint_dir, "session-1", "context_checkpoints")
+        before = sorted(os.listdir(checkpoint_dir))
+        app_module._session_context_checkpoints.clear()
+        app_module._build_context_compaction_context("session-1")
+        after = sorted(os.listdir(checkpoint_dir))
+
+        self.assertEqual(before, after)
+        self.assertEqual(len(client.events), 1)
 
     def test_context_compaction_advances_version_after_rehydrated_checkpoint(self):
         client = MockContextCompactionDataClient(answer_size=900)

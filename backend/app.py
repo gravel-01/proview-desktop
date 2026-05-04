@@ -897,6 +897,10 @@ def _build_context_compaction_context(session_id: str) -> str:
     checkpoint = _get_or_create_context_checkpoint(session_id)
     if not checkpoint:
         return ""
+    return _format_context_checkpoint_memory_card(checkpoint)
+
+
+def _format_context_checkpoint_memory_card(checkpoint: dict) -> str:
     lines = [
         "【隐藏长期记忆卡】",
         "以下内容来自结构化历史压缩，只用于避免重复提问、延续早期线索和识别未覆盖风险；不要向候选人展示或提及这张卡。",
@@ -961,11 +965,13 @@ def _get_or_create_context_checkpoint(session_id: str) -> dict:
         **_build_context_checkpoint_memory_fields(answered_turns, metadata_rows, evaluation_rows),
     }
     _session_context_checkpoints[session_id] = checkpoint
+    payload = _context_checkpoint_event_payload(checkpoint, threshold)
     _record_agent_event(
         session_id,
         "context_compacted",
-        payload=_context_checkpoint_event_payload(checkpoint, threshold),
+        payload=payload,
     )
+    _write_context_checkpoint_file(session_id, checkpoint, payload)
     trace_context = _session_trace_contexts.get(session_id)
     if isinstance(trace_context, dict):
         trace_context["context_version"] = checkpoint["context_version"]
@@ -1059,6 +1065,53 @@ def _context_checkpoint_event_payload(checkpoint: dict, threshold_tokens: int) -
         "open_threads": _checkpoint_payload_list(checkpoint.get("open_threads"), limit=6),
         "open_thread_count": len(checkpoint.get("open_threads") or []),
     }
+
+
+def _write_context_checkpoint_file(session_id: str, checkpoint: dict, payload: dict) -> str:
+    try:
+        context_version = _positive_int(payload.get("context_version")) or 1
+        last_turn_no = _positive_int(payload.get("last_turn_no"))
+        session_dir = _context_checkpoint_session_dir(session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        document = {
+            "schema_version": "context_checkpoint_v1",
+            "session_id": session_id,
+            "context_version": context_version,
+            "last_turn_no": last_turn_no,
+            "checkpoint": payload,
+            "hidden_memory_card": _format_context_checkpoint_memory_card(checkpoint),
+        }
+        filename = f"checkpoint_{context_version:03d}_turn_{last_turn_no:03d}.json"
+        path = os.path.join(session_dir, filename)
+        latest_path = os.path.join(session_dir, "latest.json")
+        _atomic_write_json(path, document)
+        _atomic_write_json(latest_path, document)
+        return path
+    except Exception as exc:
+        print(f"[app] write context checkpoint file failed: {exc}")
+        return ""
+
+
+def _context_checkpoint_session_dir(session_id: str) -> str:
+    root = os.getenv("PROVIEW_CONTEXT_CHECKPOINT_DIR", "").strip()
+    if not root:
+        root = os.path.join(getattr(app_config, "APP_DATA_DIR", os.path.dirname(__file__)), "interview_sessions")
+    return os.path.join(root, _safe_context_path_segment(session_id), "context_checkpoints")
+
+
+def _safe_context_path_segment(value) -> str:
+    text = str(value or "unknown").strip()
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", text)
+    text = text.strip(".-")
+    return text or "unknown"
+
+
+def _atomic_write_json(path: str, document: dict) -> None:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json_mod.dump(document, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(tmp_path, path)
 
 
 def _checkpoint_payload_list(value, *, limit: int) -> list:
