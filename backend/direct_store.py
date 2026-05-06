@@ -104,6 +104,22 @@ def _parse_iso_datetime(value) -> Optional[datetime]:
     return parsed
 
 
+def _safe_positive_int(value) -> Optional[int]:
+    try:
+        number = int(value)
+    except Exception:
+        return None
+    return number if number > 0 else None
+
+
+def _safe_nonnegative_int(value) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return number if number >= 0 else 0
+
+
 def _empty_evaluation_coverage_metrics() -> Dict:
     return {
         "summary": {
@@ -123,6 +139,184 @@ def _empty_evaluation_coverage_metrics() -> Dict:
         },
         "sessions": [],
     }
+
+
+def _empty_context_compaction_metrics() -> Dict:
+    return {
+        "summary": {
+            "session_count": 0,
+            "compacted_session_count": 0,
+            "context_compacted_event_count": 0,
+            "context_summary_failure_event_count": 0,
+            "latest_context_version": None,
+            "max_context_version": None,
+            "latest_compacted_at": "",
+            "summary_failure_rate": None,
+        },
+        "sessions": [],
+        "failure_reasons": [],
+    }
+
+
+def _empty_agent_event_rollup_metrics() -> Dict:
+    return {
+        "summary": {
+            "total_event_count": 0,
+            "failure_event_count": 0,
+            "distinct_session_count": 0,
+            "event_type_count": 0,
+            "agent_role_count": 0,
+            "latest_event_at": "",
+        },
+        "event_types": [],
+        "agent_roles": [],
+        "failure_event_types": [],
+        "event_type_agent_role_rollups": [],
+    }
+
+
+def _empty_report_generation_metrics() -> Dict:
+    return {
+        "summary": {
+            "total_event_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "fallback_success_count": 0,
+            "success_rate": None,
+            "latest_report_event_at": "",
+            "latest_success_at": "",
+            "latest_failure_at": "",
+        },
+        "sources": [],
+        "failure_reasons": [],
+        "routes": [],
+    }
+
+
+def _empty_rag_retrieval_metrics() -> Dict:
+    return {
+        "summary": {
+            "total_event_count": 0,
+            "success_count": 0,
+            "miss_count": 0,
+            "failure_count": 0,
+            "hit_rate": None,
+            "miss_rate": None,
+            "failure_rate": None,
+            "latest_retrieval_at": "",
+            "latest_success_at": "",
+            "latest_miss_at": "",
+            "latest_failure_at": "",
+            "job_title_matched_count": 0,
+            "title_candidate_count": 0,
+            "title_candidates_examined_count": 0,
+            "jobs_count": 0,
+            "questions_count": 0,
+            "scripts_count": 0,
+        },
+        "stages": [],
+        "statuses": [],
+        "error_types": [],
+    }
+
+
+def _empty_learning_signal_summary_metrics() -> Dict:
+    return {
+        "status": "ok",
+        "summary": {
+            "session_count": 0,
+            "turn_count": 0,
+            "question_metadata_count": 0,
+            "evaluation_count": 0,
+            "low_score_count": 0,
+            "low_score_rate": None,
+            "evidence_missing_or_short_count": 0,
+            "evidence_missing_or_short_rate": None,
+            "suggestion_present_count": 0,
+            "suggestion_present_rate": None,
+            "pass_level_count": 0,
+            "question_type_count": 0,
+            "question_source_count": 0,
+            "intended_dimension_count": 0,
+            "rag_success_count": 0,
+            "rag_miss_count": 0,
+            "rag_failure_count": 0,
+            "report_success_count": 0,
+            "report_failure_count": 0,
+            "report_fallback_success_count": 0,
+            "agent_failure_event_count": 0,
+            "low_score_threshold": 5,
+            "evidence_short_threshold_chars": 24,
+        },
+        "dimensions": [],
+        "pass_levels": [],
+        "question_types": [],
+        "question_sources": [],
+        "intended_dimensions": [],
+        "rag_retrieval": {
+            "summary": _empty_rag_retrieval_metrics()["summary"],
+            "stages": [],
+            "statuses": [],
+            "error_types": [],
+        },
+        "report_generation": {
+            "summary": _empty_report_generation_metrics()["summary"],
+            "sources": [],
+            "failure_reasons": [],
+            "routes": [],
+        },
+        "agent_failures": {
+            "summary": _empty_agent_event_rollup_metrics()["summary"],
+            "failure_event_types": [],
+            "event_type_agent_role_rollups": [],
+        },
+        "alerts": [],
+    }
+
+
+def _is_failure_event_type(event_type: str) -> bool:
+    text_value = (event_type or "").lower()
+    return any(
+        marker in text_value
+        for marker in ("failed", "failure", "error", "exception", "timeout")
+    )
+
+
+def _latest_iso_text(left: str, right: str) -> str:
+    if not left:
+        return right or ""
+    if not right:
+        return left or ""
+    left_dt = _parse_iso_datetime(left)
+    right_dt = _parse_iso_datetime(right)
+    if left_dt and right_dt:
+        return right if right_dt > left_dt else left
+    return max(left, right)
+
+
+def _increment_rollup(container: Dict, key: str, key_name: str, created_at: str) -> None:
+    if key not in container:
+        container[key] = {
+            key_name: key,
+            "count": 0,
+            "latest_created_at": "",
+        }
+    container[key]["count"] += 1
+    container[key]["latest_created_at"] = _latest_iso_text(
+        container[key]["latest_created_at"],
+        created_at,
+    )
+
+
+def _sorted_rollups(items) -> List[Dict]:
+    return sorted(
+        [dict(item) for item in items],
+        key=lambda item: (
+            -int(item.get("count") or 0),
+            str(item.get("event_type") or item.get("agent_role") or item.get("source") or item.get("reason") or item.get("route") or item.get("stage") or item.get("status") or item.get("error_type") or item.get("pass_level") or item.get("dimension") or ""),
+            str(item.get("latest_created_at") or ""),
+        ),
+    )
 
 
 def _build_session_evaluation_coverage(
@@ -190,6 +384,240 @@ def _normalize_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _safe_learning_category(value: object, fallback: str = "unknown", limit: int = 80) -> str:
+    text_value = _normalize_text(value)
+    if not text_value:
+        text_value = fallback
+    return text_value[:limit] or fallback
+
+
+def _safe_score(value: object) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _is_low_learning_score(score: int, pass_level: str) -> bool:
+    normalized_level = _normalize_text(pass_level).lower()
+    if normalized_level in {"fail", "weak_fail", "no_pass", "weak"}:
+        return True
+    return int(score or 0) <= 5
+
+
+def _is_short_learning_evidence(value: object) -> bool:
+    return len(_normalize_text(value)) < 24
+
+
+def _increment_learning_category_score(rollup: Dict, score: int, low_score: bool) -> None:
+    rollup["evaluation_count"] += 1
+    rollup["_score_total"] += int(score or 0)
+    if low_score:
+        rollup["low_score_count"] += 1
+
+
+def _finalize_learning_score_rollups(items) -> List[Dict]:
+    payload = []
+    for item in items:
+        row = dict(item)
+        total = int(row.pop("_score_total", 0) or 0)
+        count = int(row.get("evaluation_count") or 0)
+        row["average_score"] = round(total / count, 2) if count else None
+        row["low_score_rate"] = round(row.get("low_score_count", 0) / count, 4) if count else None
+        pass_levels = row.get("pass_levels")
+        if isinstance(pass_levels, dict):
+            row["pass_levels"] = _sorted_rollups(pass_levels.values())
+        payload.append(row)
+    return sorted(
+        payload,
+        key=lambda row: (
+            -int(row.get("low_score_count") or 0),
+            -int(row.get("evaluation_count") or row.get("question_count") or row.get("count") or 0),
+            str(
+                row.get("dimension")
+                or row.get("question_type")
+                or row.get("source")
+                or row.get("pass_level")
+                or ""
+            ),
+        ),
+    )
+
+
+def _learning_metadata_dimension_names(raw_value: object) -> List[str]:
+    dimensions = _loads_json(raw_value, [])
+    if not isinstance(dimensions, list):
+        return []
+    names = []
+    seen = set()
+    for item in dimensions:
+        if isinstance(item, dict):
+            raw_name = item.get("name") or item.get("dimension")
+        else:
+            raw_name = item
+        name = _safe_learning_category(raw_name, "unknown_dimension")
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _new_learning_question_rollup(key_name: str, key_value: str) -> Dict:
+    return {
+        key_name: key_value,
+        "question_count": 0,
+        "evaluated_question_count": 0,
+        "evaluation_count": 0,
+        "average_score": None,
+        "low_score_count": 0,
+        "low_score_rate": None,
+        "_score_total": 0,
+    }
+
+
+def _learning_item_value(item, key: str):
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key, None)
+
+
+def _add_learning_question_rollup(rollup: Dict, turn_evaluations: List) -> None:
+    rollup["question_count"] += 1
+    if turn_evaluations:
+        rollup["evaluated_question_count"] += 1
+    for evaluation in turn_evaluations:
+        score = _safe_score(_learning_item_value(evaluation, "score"))
+        low_score = _is_low_learning_score(
+            score,
+            _learning_item_value(evaluation, "pass_level") or "",
+        )
+        _increment_learning_category_score(rollup, score, low_score)
+
+
+def _learning_agent_failure_block(agent_metrics: Dict) -> Dict:
+    summary = agent_metrics.get("summary") if isinstance(agent_metrics, dict) else {}
+    if not isinstance(summary, dict):
+        summary = {}
+    failure_types = []
+    for item in (agent_metrics.get("failure_event_types") if isinstance(agent_metrics, dict) else []) or []:
+        if not isinstance(item, dict):
+            continue
+        failure_types.append({
+            "event_type": _safe_learning_category(item.get("event_type"), "unknown_event_type", 128),
+            "count": _safe_nonnegative_int(item.get("count")),
+            "latest_created_at": _normalize_text(item.get("latest_created_at")),
+        })
+
+    failure_pairs = []
+    for item in (agent_metrics.get("event_type_agent_role_rollups") if isinstance(agent_metrics, dict) else []) or []:
+        if not isinstance(item, dict):
+            continue
+        event_type = _safe_learning_category(item.get("event_type"), "unknown_event_type", 128)
+        if not (bool(item.get("failure")) or _is_failure_event_type(event_type)):
+            continue
+        failure_pairs.append({
+            "event_type": event_type,
+            "agent_role": _safe_learning_category(item.get("agent_role"), "unknown_agent", 80),
+            "count": _safe_nonnegative_int(item.get("count")),
+            "latest_created_at": _normalize_text(item.get("latest_created_at")),
+        })
+
+    return {
+        "summary": {
+            "total_event_count": _safe_nonnegative_int(summary.get("total_event_count")),
+            "failure_event_count": _safe_nonnegative_int(summary.get("failure_event_count")),
+            "distinct_session_count": _safe_nonnegative_int(summary.get("distinct_session_count")),
+            "event_type_count": _safe_nonnegative_int(summary.get("event_type_count")),
+            "agent_role_count": _safe_nonnegative_int(summary.get("agent_role_count")),
+            "latest_event_at": _normalize_text(summary.get("latest_event_at")),
+        },
+        "failure_event_types": failure_types,
+        "event_type_agent_role_rollups": failure_pairs,
+    }
+
+
+def _apply_learning_event_summaries(metrics: Dict) -> None:
+    summary = metrics.get("summary") or {}
+    rag_summary = ((metrics.get("rag_retrieval") or {}).get("summary") or {})
+    report_summary = ((metrics.get("report_generation") or {}).get("summary") or {})
+    agent_summary = ((metrics.get("agent_failures") or {}).get("summary") or {})
+
+    summary["rag_success_count"] = _safe_nonnegative_int(rag_summary.get("success_count"))
+    summary["rag_miss_count"] = _safe_nonnegative_int(rag_summary.get("miss_count"))
+    summary["rag_failure_count"] = _safe_nonnegative_int(rag_summary.get("failure_count"))
+    summary["report_success_count"] = _safe_nonnegative_int(report_summary.get("success_count"))
+    summary["report_failure_count"] = _safe_nonnegative_int(report_summary.get("failure_count"))
+    summary["report_fallback_success_count"] = _safe_nonnegative_int(
+        report_summary.get("fallback_success_count")
+    )
+    summary["agent_failure_event_count"] = _safe_nonnegative_int(
+        agent_summary.get("failure_event_count")
+    )
+
+
+def _build_learning_signal_alerts(summary: Dict) -> List[Dict]:
+    alerts = []
+    low_score_rate = summary.get("low_score_rate")
+    if low_score_rate is not None and low_score_rate >= 0.3:
+        alerts.append({
+            "code": "learning_low_score_rate_high",
+            "severity": "warning",
+            "message": "Low-score evaluations are common in the selected learning window.",
+        })
+    evidence_rate = summary.get("evidence_missing_or_short_rate")
+    if evidence_rate is not None and evidence_rate >= 0.25:
+        alerts.append({
+            "code": "learning_evidence_gap_rate_high",
+            "severity": "warning",
+            "message": "Many evaluations have missing or short evidence in the selected window.",
+        })
+    if summary.get("rag_failure_count", 0) > 0:
+        alerts.append({
+            "code": "learning_rag_failures_present",
+            "severity": "warning",
+            "message": "RAG retrieval failures are present and should be reviewed offline.",
+        })
+    if summary.get("rag_miss_count", 0) > summary.get("rag_success_count", 0):
+        alerts.append({
+            "code": "learning_rag_misses_exceed_hits",
+            "severity": "warning",
+            "message": "RAG misses exceed successful retrievals in the selected window.",
+        })
+    if summary.get("report_failure_count", 0) > 0:
+        alerts.append({
+            "code": "learning_report_failures_present",
+            "severity": "warning",
+            "message": "Final report generation failures are present in the selected window.",
+        })
+    if summary.get("report_fallback_success_count", 0) > 0:
+        alerts.append({
+            "code": "learning_report_fallbacks_present",
+            "severity": "info",
+            "message": "Fallback final reports were used and may warrant quality review.",
+        })
+    if summary.get("agent_failure_event_count", 0) > 0:
+        alerts.append({
+            "code": "learning_agent_failures_present",
+            "severity": "warning",
+            "message": "Agent failure events are present and should be reviewed by an operator.",
+        })
+    if summary.get("session_count", 0) > 0 and summary.get("evaluation_count", 0) == 0:
+        alerts.append({
+            "code": "learning_no_structured_evaluations",
+            "severity": "info",
+            "message": "Sessions are present, but no structured evaluations were found.",
+        })
+    return alerts
+
+
+def _learning_status(alerts: List[Dict]) -> str:
+    severities = {item.get("severity") for item in alerts if isinstance(item, dict)}
+    if "critical" in severities or "warning" in severities:
+        return "degraded"
+    return "ok"
 
 
 def _slugify_key(text_value: str) -> str:
@@ -1272,6 +1700,718 @@ class DirectDataStore:
         except Exception as exc:
             print(f"[DirectStore] get_evaluation_coverage_metrics failed: {exc}")
             return _empty_evaluation_coverage_metrics()
+
+    def get_context_compaction_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        try:
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            with self.session() as db:
+                stmt = select(InterviewSession).order_by(InterviewSession.start_time.desc())
+                if cutoff is not None:
+                    sessions = [
+                        row for row in db.scalars(stmt).all()
+                        if _parse_iso_datetime(row.start_time) is None
+                        or _parse_iso_datetime(row.start_time) >= cutoff
+                    ]
+                else:
+                    sessions = db.scalars(stmt).all()
+                if limit is not None and int(limit) > 0:
+                    sessions = sessions[: int(limit)]
+
+                session_rows = [
+                    {
+                        "session_id": row.session_id,
+                        "candidate_name": row.candidate_name or "",
+                        "position": row.position or "",
+                        "status": row.status or "",
+                        "start_time": row.start_time or "",
+                        "end_time": row.end_time or "",
+                    }
+                    for row in sessions
+                ]
+                session_ids = [row["session_id"] for row in session_rows]
+                if not session_ids:
+                    return _empty_context_compaction_metrics()
+
+                event_rows = db.scalars(
+                    select(AgentEvent)
+                    .where(AgentEvent.session_id.in_(session_ids))
+                    .where(AgentEvent.event_type.in_(["context_compacted", "context_summary_failed"]))
+                    .order_by(AgentEvent.created_at.asc(), AgentEvent.event_id.asc())
+                ).all()
+                events = [self._agent_event_to_dict(row) for row in event_rows]
+
+            events_by_session = defaultdict(list)
+            failure_reason_counts = defaultdict(int)
+            for event in events:
+                events_by_session[event["session_id"]].append(event)
+                if event.get("event_type") == "context_summary_failed":
+                    reason = str((event.get("payload") or {}).get("reason") or "unknown").strip() or "unknown"
+                    failure_reason_counts[reason[:120]] += 1
+
+            sessions_payload = []
+            summary = {
+                "session_count": len(session_rows),
+                "compacted_session_count": 0,
+                "context_compacted_event_count": 0,
+                "context_summary_failure_event_count": 0,
+                "latest_context_version": None,
+                "max_context_version": None,
+                "latest_compacted_at": "",
+                "summary_failure_rate": None,
+            }
+
+            for session in session_rows:
+                session_events = events_by_session.get(session["session_id"], [])
+                compacted_events = [
+                    item for item in session_events
+                    if item.get("event_type") == "context_compacted"
+                ]
+                failure_events = [
+                    item for item in session_events
+                    if item.get("event_type") == "context_summary_failed"
+                ]
+                latest_payload = {}
+                latest_compacted_at = ""
+                latest_context_version = None
+                max_context_version = None
+                last_turn_no = None
+                estimated_tokens = None
+                threshold_tokens = None
+                open_thread_count = None
+
+                if compacted_events:
+                    summary["compacted_session_count"] += 1
+                    latest_event = max(
+                        compacted_events,
+                        key=lambda item: (
+                            _parse_iso_datetime(item.get("created_at")) or datetime.min,
+                            item.get("event_id") or "",
+                        ),
+                    )
+                    latest_payload = latest_event.get("payload") or {}
+                    latest_compacted_at = latest_event.get("created_at") or ""
+                    latest_context_version = _safe_positive_int(latest_payload.get("context_version"))
+                    last_turn_no = _safe_positive_int(latest_payload.get("last_turn_no"))
+                    estimated_tokens = _safe_positive_int(latest_payload.get("estimated_tokens"))
+                    threshold_tokens = _safe_positive_int(latest_payload.get("threshold_tokens"))
+                    open_thread_count = _safe_positive_int(latest_payload.get("open_thread_count"))
+                    versions = [
+                        _safe_positive_int((event.get("payload") or {}).get("context_version"))
+                        for event in compacted_events
+                    ]
+                    versions = [value for value in versions if value is not None]
+                    max_context_version = max(versions) if versions else latest_context_version
+
+                summary["context_compacted_event_count"] += len(compacted_events)
+                summary["context_summary_failure_event_count"] += len(failure_events)
+
+                if latest_context_version is not None:
+                    summary["latest_context_version"] = max(
+                        summary["latest_context_version"] or 0,
+                        latest_context_version,
+                    )
+                if max_context_version is not None:
+                    summary["max_context_version"] = max(
+                        summary["max_context_version"] or 0,
+                        max_context_version,
+                    )
+                if latest_compacted_at:
+                    previous = _parse_iso_datetime(summary["latest_compacted_at"]) if summary["latest_compacted_at"] else None
+                    current = _parse_iso_datetime(latest_compacted_at)
+                    if current and (not previous or current > previous):
+                        summary["latest_compacted_at"] = latest_compacted_at
+
+                sessions_payload.append({
+                    **session,
+                    "context_compacted_event_count": len(compacted_events),
+                    "context_summary_failure_event_count": len(failure_events),
+                    "latest_context_version": latest_context_version,
+                    "max_context_version": max_context_version,
+                    "latest_compacted_at": latest_compacted_at,
+                    "last_turn_no": last_turn_no,
+                    "estimated_tokens": estimated_tokens,
+                    "threshold_tokens": threshold_tokens,
+                    "open_thread_count": open_thread_count,
+                    "has_context_checkpoint": bool(compacted_events),
+                })
+
+            compacted_count = summary["context_compacted_event_count"]
+            failure_count = summary["context_summary_failure_event_count"]
+            summary["summary_failure_rate"] = (
+                round(failure_count / (compacted_count + failure_count), 4)
+                if (compacted_count + failure_count) else None
+            )
+
+            failure_reasons = [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(
+                    failure_reason_counts.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ]
+            return {
+                "summary": summary,
+                "sessions": sessions_payload,
+                "failure_reasons": failure_reasons,
+            }
+        except Exception as exc:
+            print(f"[DirectStore] get_context_compaction_metrics failed: {exc}")
+            return _empty_context_compaction_metrics()
+
+    def get_agent_event_rollup_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        try:
+            if limit is not None and int(limit) <= 0:
+                return _empty_agent_event_rollup_metrics()
+
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            with self.session() as db:
+                stmt = select(AgentEvent).order_by(
+                    AgentEvent.created_at.desc(),
+                    AgentEvent.event_id.desc(),
+                )
+                rows = db.scalars(stmt).all()
+                raw_events = [
+                    {
+                        "session_id": row.session_id,
+                        "event_type": row.event_type or "unknown",
+                        "agent_role": row.agent_role or "unknown",
+                        "created_at": row.created_at or "",
+                    }
+                    for row in rows
+                ]
+
+            events = []
+            for row in raw_events:
+                created_at = _parse_iso_datetime(row["created_at"])
+                if cutoff is not None and created_at is not None and created_at < cutoff:
+                    continue
+                events.append(row)
+                if limit is not None and len(events) >= int(limit):
+                    break
+
+            if not events:
+                return _empty_agent_event_rollup_metrics()
+
+            event_type_rollups = {}
+            agent_role_rollups = {}
+            pair_rollups = {}
+            failure_type_rollups = {}
+            session_ids = set()
+            latest_event_at = ""
+
+            for event in events:
+                session_ids.add(event["session_id"])
+                event_type = event["event_type"]
+                agent_role = event["agent_role"]
+                created_at = event["created_at"]
+                latest_event_at = _latest_iso_text(latest_event_at, created_at)
+
+                _increment_rollup(event_type_rollups, event_type, "event_type", created_at)
+                _increment_rollup(agent_role_rollups, agent_role, "agent_role", created_at)
+                pair_key = (event_type, agent_role)
+                if pair_key not in pair_rollups:
+                    pair_rollups[pair_key] = {
+                        "event_type": event_type,
+                        "agent_role": agent_role,
+                        "count": 0,
+                        "latest_created_at": "",
+                        "failure": _is_failure_event_type(event_type),
+                    }
+                pair_rollups[pair_key]["count"] += 1
+                pair_rollups[pair_key]["latest_created_at"] = _latest_iso_text(
+                    pair_rollups[pair_key]["latest_created_at"],
+                    created_at,
+                )
+
+                if _is_failure_event_type(event_type):
+                    _increment_rollup(
+                        failure_type_rollups,
+                        event_type,
+                        "event_type",
+                        created_at,
+                    )
+
+            event_types = _sorted_rollups(event_type_rollups.values())
+            for item in event_types:
+                item["failure"] = _is_failure_event_type(item["event_type"])
+
+            failure_event_types = _sorted_rollups(failure_type_rollups.values())
+            return {
+                "summary": {
+                    "total_event_count": len(events),
+                    "failure_event_count": sum(item["count"] for item in failure_event_types),
+                    "distinct_session_count": len(session_ids),
+                    "event_type_count": len(event_types),
+                    "agent_role_count": len(agent_role_rollups),
+                    "latest_event_at": latest_event_at,
+                },
+                "event_types": event_types,
+                "agent_roles": _sorted_rollups(agent_role_rollups.values()),
+                "failure_event_types": failure_event_types,
+                "event_type_agent_role_rollups": _sorted_rollups(pair_rollups.values()),
+            }
+        except Exception as exc:
+            print(f"[DirectStore] get_agent_event_rollup_metrics failed: {exc}")
+            return _empty_agent_event_rollup_metrics()
+
+    def get_report_generation_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        try:
+            if limit is not None and int(limit) <= 0:
+                return _empty_report_generation_metrics()
+
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            report_event_types = [
+                "final_report_generation_succeeded",
+                "final_report_generation_failed",
+            ]
+            with self.session() as db:
+                rows = db.scalars(
+                    select(AgentEvent)
+                    .where(AgentEvent.event_type.in_(report_event_types))
+                    .order_by(AgentEvent.created_at.desc(), AgentEvent.event_id.desc())
+                ).all()
+                raw_events = [
+                    {
+                        "event_type": row.event_type or "",
+                        "payload": _loads_json(row.payload_json, {}),
+                        "created_at": row.created_at or "",
+                    }
+                    for row in rows
+                ]
+
+            events = []
+            for event in raw_events:
+                created_at = _parse_iso_datetime(event["created_at"])
+                if cutoff is not None and created_at is not None and created_at < cutoff:
+                    continue
+                events.append(event)
+                if limit is not None and len(events) >= int(limit):
+                    break
+
+            if not events:
+                return _empty_report_generation_metrics()
+
+            source_rollups = {}
+            reason_rollups = {}
+            route_rollups = {}
+            summary = {
+                "total_event_count": len(events),
+                "success_count": 0,
+                "failure_count": 0,
+                "fallback_success_count": 0,
+                "success_rate": None,
+                "latest_report_event_at": "",
+                "latest_success_at": "",
+                "latest_failure_at": "",
+            }
+
+            for event in events:
+                event_type = event.get("event_type") or ""
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                created_at = event.get("created_at") or ""
+                summary["latest_report_event_at"] = _latest_iso_text(
+                    summary["latest_report_event_at"],
+                    created_at,
+                )
+
+                route = str(payload.get("route") or "unknown").strip()[:80] or "unknown"
+                _increment_rollup(route_rollups, route, "route", created_at)
+
+                if event_type == "final_report_generation_succeeded":
+                    summary["success_count"] += 1
+                    summary["latest_success_at"] = _latest_iso_text(
+                        summary["latest_success_at"],
+                        created_at,
+                    )
+                    if bool(payload.get("fallback_used")):
+                        summary["fallback_success_count"] += 1
+                    source = str(payload.get("source") or "unknown").strip()[:80] or "unknown"
+                    _increment_rollup(source_rollups, source, "source", created_at)
+                elif event_type == "final_report_generation_failed":
+                    summary["failure_count"] += 1
+                    summary["latest_failure_at"] = _latest_iso_text(
+                        summary["latest_failure_at"],
+                        created_at,
+                    )
+                    reason = str(payload.get("reason") or "unknown").strip()[:120] or "unknown"
+                    _increment_rollup(reason_rollups, reason, "reason", created_at)
+
+            total_terminal = summary["success_count"] + summary["failure_count"]
+            summary["success_rate"] = (
+                round(summary["success_count"] / total_terminal, 4)
+                if total_terminal else None
+            )
+
+            return {
+                "summary": summary,
+                "sources": _sorted_rollups(source_rollups.values()),
+                "failure_reasons": _sorted_rollups(reason_rollups.values()),
+                "routes": _sorted_rollups(route_rollups.values()),
+            }
+        except Exception as exc:
+            print(f"[DirectStore] get_report_generation_metrics failed: {exc}")
+            return _empty_report_generation_metrics()
+
+    def get_rag_retrieval_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        try:
+            if limit is not None and int(limit) <= 0:
+                return _empty_rag_retrieval_metrics()
+
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            rag_event_types = [
+                "rag_retrieval_succeeded",
+                "rag_retrieval_missed",
+                "rag_retrieval_failed",
+            ]
+            with self.session() as db:
+                rows = db.scalars(
+                    select(AgentEvent)
+                    .where(AgentEvent.event_type.in_(rag_event_types))
+                    .order_by(AgentEvent.created_at.desc(), AgentEvent.event_id.desc())
+                ).all()
+                raw_events = [
+                    {
+                        "event_type": row.event_type or "",
+                        "payload": _loads_json(row.payload_json, {}),
+                        "created_at": row.created_at or "",
+                    }
+                    for row in rows
+                ]
+
+            events = []
+            for event in raw_events:
+                created_at = _parse_iso_datetime(event["created_at"])
+                if cutoff is not None and created_at is not None and created_at < cutoff:
+                    continue
+                events.append(event)
+                if limit is not None and len(events) >= int(limit):
+                    break
+
+            if not events:
+                return _empty_rag_retrieval_metrics()
+
+            stage_rollups = {}
+            status_rollups = {}
+            error_type_rollups = {}
+            summary = {
+                "total_event_count": len(events),
+                "success_count": 0,
+                "miss_count": 0,
+                "failure_count": 0,
+                "hit_rate": None,
+                "miss_rate": None,
+                "failure_rate": None,
+                "latest_retrieval_at": "",
+                "latest_success_at": "",
+                "latest_miss_at": "",
+                "latest_failure_at": "",
+                "job_title_matched_count": 0,
+                "title_candidate_count": 0,
+                "title_candidates_examined_count": 0,
+                "jobs_count": 0,
+                "questions_count": 0,
+                "scripts_count": 0,
+            }
+
+            event_status_by_type = {
+                "rag_retrieval_succeeded": "succeeded",
+                "rag_retrieval_missed": "missed",
+                "rag_retrieval_failed": "failed",
+            }
+            for event in events:
+                event_type = event.get("event_type") or ""
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                created_at = event.get("created_at") or ""
+                status = event_status_by_type.get(event_type, str(payload.get("status") or "unknown").strip()[:40] or "unknown")
+                stage = str(payload.get("stage") or "unknown").strip()[:60] or "unknown"
+                summary["latest_retrieval_at"] = _latest_iso_text(
+                    summary["latest_retrieval_at"],
+                    created_at,
+                )
+                _increment_rollup(stage_rollups, stage, "stage", created_at)
+                _increment_rollup(status_rollups, status, "status", created_at)
+
+                if event_type == "rag_retrieval_succeeded":
+                    summary["success_count"] += 1
+                    summary["latest_success_at"] = _latest_iso_text(
+                        summary["latest_success_at"],
+                        created_at,
+                    )
+                elif event_type == "rag_retrieval_missed":
+                    summary["miss_count"] += 1
+                    summary["latest_miss_at"] = _latest_iso_text(
+                        summary["latest_miss_at"],
+                        created_at,
+                    )
+                elif event_type == "rag_retrieval_failed":
+                    summary["failure_count"] += 1
+                    summary["latest_failure_at"] = _latest_iso_text(
+                        summary["latest_failure_at"],
+                        created_at,
+                    )
+                    error_type = str(payload.get("error_type") or "unknown").strip()[:80] or "unknown"
+                    _increment_rollup(error_type_rollups, error_type, "error_type", created_at)
+
+                if bool(payload.get("job_title_matched")):
+                    summary["job_title_matched_count"] += 1
+                summary["title_candidate_count"] += _safe_nonnegative_int(payload.get("title_candidate_count"))
+                summary["title_candidates_examined_count"] += _safe_nonnegative_int(payload.get("title_candidates_examined"))
+                summary["jobs_count"] += _safe_nonnegative_int(payload.get("jobs_count"))
+                summary["questions_count"] += _safe_nonnegative_int(payload.get("questions_count"))
+                summary["scripts_count"] += _safe_nonnegative_int(payload.get("scripts_count"))
+
+            total = summary["total_event_count"]
+            summary["hit_rate"] = round(summary["success_count"] / total, 4) if total else None
+            summary["miss_rate"] = round(summary["miss_count"] / total, 4) if total else None
+            summary["failure_rate"] = round(summary["failure_count"] / total, 4) if total else None
+
+            return {
+                "summary": summary,
+                "stages": _sorted_rollups(stage_rollups.values()),
+                "statuses": _sorted_rollups(status_rollups.values()),
+                "error_types": _sorted_rollups(error_type_rollups.values()),
+            }
+        except Exception as exc:
+            print(f"[DirectStore] get_rag_retrieval_metrics failed: {exc}")
+            return _empty_rag_retrieval_metrics()
+
+    def get_learning_signal_summary_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 200) -> Dict:
+        try:
+            if limit is not None and int(limit) <= 0:
+                return _empty_learning_signal_summary_metrics()
+
+            cutoff = None
+            if hours is not None and int(hours) > 0:
+                cutoff = datetime.now() - timedelta(hours=int(hours))
+
+            with self.session() as db:
+                stmt = select(InterviewSession).order_by(InterviewSession.start_time.desc())
+                if cutoff is not None:
+                    sessions = [
+                        row for row in db.scalars(stmt).all()
+                        if _parse_iso_datetime(row.start_time) is None
+                        or _parse_iso_datetime(row.start_time) >= cutoff
+                    ]
+                else:
+                    sessions = db.scalars(stmt).all()
+                if limit is not None and int(limit) > 0:
+                    sessions = sessions[: int(limit)]
+
+                session_ids = [row.session_id for row in sessions]
+                if not session_ids:
+                    metrics = _empty_learning_signal_summary_metrics()
+                    metrics["rag_retrieval"] = self.get_rag_retrieval_metrics(hours=hours, limit=limit)
+                    metrics["report_generation"] = self.get_report_generation_metrics(hours=hours, limit=limit)
+                    agent_metrics = self.get_agent_event_rollup_metrics(hours=hours, limit=limit)
+                    metrics["agent_failures"] = _learning_agent_failure_block(agent_metrics)
+                    _apply_learning_event_summaries(metrics)
+                    metrics["alerts"] = _build_learning_signal_alerts(metrics["summary"])
+                    metrics["status"] = _learning_status(metrics["alerts"])
+                    return metrics
+
+                turn_rows = db.scalars(
+                    select(InterviewTurn)
+                    .where(InterviewTurn.session_id.in_(session_ids))
+                    .order_by(InterviewTurn.session_id.asc(), InterviewTurn.turn_no.asc())
+                ).all()
+                metadata_rows = db.scalars(
+                    select(QuestionMetadata)
+                    .where(QuestionMetadata.session_id.in_(session_ids))
+                    .order_by(QuestionMetadata.session_id.asc(), QuestionMetadata.turn_no.asc())
+                ).all()
+                evaluation_rows = db.scalars(
+                    select(TurnEvaluation)
+                    .where(TurnEvaluation.session_id.in_(session_ids))
+                    .order_by(TurnEvaluation.session_id.asc(), TurnEvaluation.turn_no.asc())
+                ).all()
+                turns = [
+                    {
+                        "turn_id": row.turn_id,
+                        "session_id": row.session_id,
+                        "turn_no": row.turn_no,
+                        "status": row.status or "pending",
+                    }
+                    for row in turn_rows
+                ]
+                metadata_items = [
+                    {
+                        "turn_id": row.turn_id,
+                        "question_type": row.question_type or "",
+                        "source": row.source or "",
+                        "dimensions_json": row.dimensions_json or "[]",
+                        "created_at": row.created_at or "",
+                    }
+                    for row in metadata_rows
+                ]
+                evaluation_items = [
+                    {
+                        "turn_id": row.turn_id,
+                        "dimension": row.dimension or "",
+                        "score": row.score,
+                        "pass_level": row.pass_level or "",
+                        "evidence": row.evidence or "",
+                        "suggestion": row.suggestion or "",
+                        "created_at": row.created_at or "",
+                    }
+                    for row in evaluation_rows
+                ]
+
+            evaluations_by_turn = defaultdict(list)
+            for row in evaluation_items:
+                evaluations_by_turn[row["turn_id"]].append(row)
+
+            summary = {
+                "session_count": len(session_ids),
+                "turn_count": len(turns),
+                "question_metadata_count": len(metadata_items),
+                "evaluation_count": len(evaluation_items),
+                "low_score_count": 0,
+                "low_score_rate": None,
+                "evidence_missing_or_short_count": 0,
+                "evidence_missing_or_short_rate": None,
+                "suggestion_present_count": 0,
+                "suggestion_present_rate": None,
+                "pass_level_count": 0,
+                "question_type_count": 0,
+                "question_source_count": 0,
+                "intended_dimension_count": 0,
+                "rag_success_count": 0,
+                "rag_miss_count": 0,
+                "rag_failure_count": 0,
+                "report_success_count": 0,
+                "report_failure_count": 0,
+                "report_fallback_success_count": 0,
+                "agent_failure_event_count": 0,
+                "low_score_threshold": 5,
+                "evidence_short_threshold_chars": 24,
+            }
+            dimension_rollups = {}
+            pass_level_rollups = {}
+            question_type_rollups = {}
+            question_source_rollups = {}
+            intended_dimension_rollups = {}
+
+            for row in evaluation_items:
+                dimension = _safe_learning_category(row.get("dimension"), "unknown_dimension")
+                pass_level = _safe_learning_category(row.get("pass_level"), "unknown", 64)
+                score = _safe_score(row.get("score"))
+                low_score = _is_low_learning_score(score, pass_level)
+
+                if dimension not in dimension_rollups:
+                    dimension_rollups[dimension] = {
+                        "dimension": dimension,
+                        "evaluation_count": 0,
+                        "average_score": None,
+                        "low_score_count": 0,
+                        "low_score_rate": None,
+                        "evidence_missing_or_short_count": 0,
+                        "suggestion_present_count": 0,
+                        "pass_levels": {},
+                        "_score_total": 0,
+                    }
+                dim_rollup = dimension_rollups[dimension]
+                _increment_learning_category_score(dim_rollup, score, low_score)
+                if _is_short_learning_evidence(row.get("evidence")):
+                    dim_rollup["evidence_missing_or_short_count"] += 1
+                    summary["evidence_missing_or_short_count"] += 1
+                if _normalize_text(row.get("suggestion")):
+                    dim_rollup["suggestion_present_count"] += 1
+                    summary["suggestion_present_count"] += 1
+                _increment_rollup(dim_rollup["pass_levels"], pass_level, "pass_level", row.get("created_at") or "")
+
+                _increment_rollup(pass_level_rollups, pass_level, "pass_level", row.get("created_at") or "")
+                if low_score:
+                    summary["low_score_count"] += 1
+
+            for row in metadata_items:
+                question_type = _safe_learning_category(row.get("question_type"), "unknown_question_type")
+                source = _safe_learning_category(row.get("source"), "unknown_source")
+                turn_evaluations = evaluations_by_turn.get(row.get("turn_id"), [])
+
+                if question_type not in question_type_rollups:
+                    question_type_rollups[question_type] = _new_learning_question_rollup(
+                        "question_type",
+                        question_type,
+                    )
+                _add_learning_question_rollup(
+                    question_type_rollups[question_type],
+                    turn_evaluations,
+                )
+
+                if source not in question_source_rollups:
+                    question_source_rollups[source] = _new_learning_question_rollup("source", source)
+                _add_learning_question_rollup(
+                    question_source_rollups[source],
+                    turn_evaluations,
+                )
+
+                for dimension in _learning_metadata_dimension_names(row.get("dimensions_json")):
+                    if dimension not in intended_dimension_rollups:
+                        intended_dimension_rollups[dimension] = {
+                            "dimension": dimension,
+                            "count": 0,
+                            "latest_created_at": "",
+                        }
+                    intended_dimension_rollups[dimension]["count"] += 1
+                    intended_dimension_rollups[dimension]["latest_created_at"] = _latest_iso_text(
+                        intended_dimension_rollups[dimension]["latest_created_at"],
+                        row.get("created_at") or "",
+                    )
+
+            evaluation_count = summary["evaluation_count"]
+            summary["low_score_rate"] = (
+                round(summary["low_score_count"] / evaluation_count, 4)
+                if evaluation_count else None
+            )
+            summary["evidence_missing_or_short_rate"] = (
+                round(summary["evidence_missing_or_short_count"] / evaluation_count, 4)
+                if evaluation_count else None
+            )
+            summary["suggestion_present_rate"] = (
+                round(summary["suggestion_present_count"] / evaluation_count, 4)
+                if evaluation_count else None
+            )
+            summary["pass_level_count"] = len(pass_level_rollups)
+            summary["question_type_count"] = len(question_type_rollups)
+            summary["question_source_count"] = len(question_source_rollups)
+            summary["intended_dimension_count"] = len(intended_dimension_rollups)
+
+            rag_metrics = self.get_rag_retrieval_metrics(hours=hours, limit=limit)
+            report_metrics = self.get_report_generation_metrics(hours=hours, limit=limit)
+            agent_metrics = self.get_agent_event_rollup_metrics(hours=hours, limit=limit)
+
+            metrics = {
+                "status": "ok",
+                "summary": summary,
+                "dimensions": _finalize_learning_score_rollups(dimension_rollups.values()),
+                "pass_levels": _sorted_rollups(pass_level_rollups.values()),
+                "question_types": _finalize_learning_score_rollups(question_type_rollups.values()),
+                "question_sources": _finalize_learning_score_rollups(question_source_rollups.values()),
+                "intended_dimensions": _sorted_rollups(intended_dimension_rollups.values()),
+                "rag_retrieval": rag_metrics,
+                "report_generation": report_metrics,
+                "agent_failures": _learning_agent_failure_block(agent_metrics),
+                "alerts": [],
+            }
+            _apply_learning_event_summaries(metrics)
+            metrics["alerts"] = _build_learning_signal_alerts(metrics["summary"])
+            metrics["status"] = _learning_status(metrics["alerts"])
+            return metrics
+        except Exception as exc:
+            print(f"[DirectStore] get_learning_signal_summary_metrics failed: {exc}")
+            return _empty_learning_signal_summary_metrics()
 
     def record_agent_event(
         self,

@@ -579,6 +579,124 @@ class SupabaseHTTPStore:
             "sessions": [],
         }
 
+    def get_context_compaction_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        return {
+            "summary": {
+                "session_count": 0,
+                "compacted_session_count": 0,
+                "context_compacted_event_count": 0,
+                "context_summary_failure_event_count": 0,
+                "latest_context_version": None,
+                "max_context_version": None,
+                "latest_compacted_at": "",
+                "summary_failure_rate": None,
+            },
+            "sessions": [],
+            "failure_reasons": [],
+        }
+
+    def get_agent_event_rollup_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        return {
+            "summary": {
+                "total_event_count": 0,
+                "failure_event_count": 0,
+                "distinct_session_count": 0,
+                "event_type_count": 0,
+                "agent_role_count": 0,
+                "latest_event_at": "",
+            },
+            "event_types": [],
+            "agent_roles": [],
+            "failure_event_types": [],
+            "event_type_agent_role_rollups": [],
+        }
+
+    def get_report_generation_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        return {
+            "summary": {
+                "total_event_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "fallback_success_count": 0,
+                "success_rate": None,
+                "latest_report_event_at": "",
+                "latest_success_at": "",
+                "latest_failure_at": "",
+            },
+            "sources": [],
+            "failure_reasons": [],
+            "routes": [],
+        }
+
+    def get_rag_retrieval_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 100) -> Dict:
+        return {
+            "summary": {
+                "total_event_count": 0,
+                "success_count": 0,
+                "miss_count": 0,
+                "failure_count": 0,
+                "hit_rate": None,
+                "miss_rate": None,
+                "failure_rate": None,
+                "latest_retrieval_at": "",
+                "latest_success_at": "",
+                "latest_miss_at": "",
+                "latest_failure_at": "",
+                "job_title_matched_count": 0,
+                "title_candidate_count": 0,
+                "title_candidates_examined_count": 0,
+                "jobs_count": 0,
+                "questions_count": 0,
+                "scripts_count": 0,
+            },
+            "stages": [],
+            "statuses": [],
+            "error_types": [],
+        }
+
+    def get_learning_signal_summary_metrics(self, *, hours: Optional[int] = None, limit: Optional[int] = 200) -> Dict:
+        return {
+            "status": "ok",
+            "summary": {
+                "session_count": 0,
+                "turn_count": 0,
+                "question_metadata_count": 0,
+                "evaluation_count": 0,
+                "low_score_count": 0,
+                "low_score_rate": None,
+                "evidence_missing_or_short_count": 0,
+                "evidence_missing_or_short_rate": None,
+                "suggestion_present_count": 0,
+                "suggestion_present_rate": None,
+                "pass_level_count": 0,
+                "question_type_count": 0,
+                "question_source_count": 0,
+                "intended_dimension_count": 0,
+                "rag_success_count": 0,
+                "rag_miss_count": 0,
+                "rag_failure_count": 0,
+                "report_success_count": 0,
+                "report_failure_count": 0,
+                "report_fallback_success_count": 0,
+                "agent_failure_event_count": 0,
+                "low_score_threshold": 5,
+                "evidence_short_threshold_chars": 24,
+            },
+            "dimensions": [],
+            "pass_levels": [],
+            "question_types": [],
+            "question_sources": [],
+            "intended_dimensions": [],
+            "rag_retrieval": self.get_rag_retrieval_metrics(hours=hours, limit=limit),
+            "report_generation": self.get_report_generation_metrics(hours=hours, limit=limit),
+            "agent_failures": {
+                "summary": self.get_agent_event_rollup_metrics(hours=hours, limit=limit).get("summary", {}),
+                "failure_event_types": [],
+                "event_type_agent_role_rollups": [],
+            },
+            "alerts": [],
+        }
+
     def record_agent_event(
         self,
         session_id: str,

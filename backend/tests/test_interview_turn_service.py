@@ -83,6 +83,162 @@ class InterviewTurnServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["event_type"], "context_compacted")
         self.assertEqual(rows[0]["payload"]["context_version"], 2)
 
+    def test_agent_event_rollup_metrics_aggregate_without_payload(self):
+        self.store.record_agent_event(
+            self.session_id,
+            "context_compacted",
+            agent_role="summary",
+            payload={
+                "context_version": 2,
+                "candidate_facts": ["hidden fact should not be returned"],
+            },
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "turn_evaluation_failed",
+            agent_role="evaluator",
+            payload={"reason": "json_parse_failed", "candidate_answer": "hidden answer"},
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "context_summary_failed",
+            agent_role="summary",
+            payload={"raw": "hidden summary text"},
+        )
+
+        metrics = self.store.get_agent_event_rollup_metrics(hours=24, limit=10)
+        summary = metrics["summary"]
+        metrics_text = str(metrics)
+        failure_types = {item["event_type"]: item for item in metrics["failure_event_types"]}
+
+        self.assertEqual(summary["total_event_count"], 3)
+        self.assertEqual(summary["failure_event_count"], 2)
+        self.assertEqual(summary["distinct_session_count"], 1)
+        self.assertEqual(summary["event_type_count"], 3)
+        self.assertEqual(summary["agent_role_count"], 2)
+        self.assertIn("turn_evaluation_failed", failure_types)
+        self.assertIn("context_summary_failed", failure_types)
+        self.assertTrue(metrics["event_type_agent_role_rollups"])
+        self.assertNotIn("payload", metrics_text)
+        self.assertNotIn("candidate_facts", metrics_text)
+        self.assertNotIn("hidden fact should not be returned", metrics_text)
+        self.assertNotIn("candidate_answer", metrics_text)
+        self.assertNotIn("hidden answer", metrics_text)
+        self.assertNotIn("hidden summary text", metrics_text)
+
+    def test_report_generation_metrics_aggregate_without_report_payload(self):
+        self.store.record_agent_event(
+            self.session_id,
+            "final_report_generation_failed",
+            agent_role="reporter",
+            payload={
+                "route": "end",
+                "reason": "RuntimeError",
+                "raw_report": "hidden report text",
+                "candidate_answer": "hidden answer",
+            },
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "final_report_generation_succeeded",
+            agent_role="reporter",
+            payload={
+                "route": "end",
+                "source": "structured_fallback",
+                "fallback_used": True,
+                "summary": "hidden summary",
+                "evidence": ["hidden evidence"],
+            },
+        )
+
+        metrics = self.store.get_report_generation_metrics(hours=24, limit=10)
+        summary = metrics["summary"]
+        metrics_text = str(metrics)
+
+        self.assertEqual(summary["total_event_count"], 2)
+        self.assertEqual(summary["success_count"], 1)
+        self.assertEqual(summary["failure_count"], 1)
+        self.assertEqual(summary["fallback_success_count"], 1)
+        self.assertEqual(summary["success_rate"], 0.5)
+        self.assertEqual(len(metrics["sources"]), 1)
+        self.assertEqual(metrics["sources"][0]["source"], "structured_fallback")
+        self.assertEqual(metrics["sources"][0]["count"], 1)
+        self.assertEqual(metrics["failure_reasons"][0]["reason"], "RuntimeError")
+        self.assertNotIn("raw_report", metrics_text)
+        self.assertNotIn("hidden report text", metrics_text)
+        self.assertNotIn("candidate_answer", metrics_text)
+        self.assertNotIn("hidden answer", metrics_text)
+        self.assertNotIn("hidden summary", metrics_text)
+        self.assertNotIn("hidden evidence", metrics_text)
+
+    def test_rag_retrieval_metrics_aggregate_without_rag_payload(self):
+        self.store.record_agent_event(
+            self.session_id,
+            "rag_retrieval_succeeded",
+            agent_role="rag",
+            payload={
+                "stage": "opening",
+                "status": "succeeded",
+                "job_title_matched": True,
+                "title_candidate_count": 2,
+                "title_candidates_examined": 1,
+                "jobs_count": 1,
+                "questions_count": 5,
+                "scripts_count": 2,
+                "query": "hidden query",
+                "resume_text": "hidden resume",
+                "document": "hidden question document",
+            },
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "rag_retrieval_missed",
+            agent_role="rag",
+            payload={
+                "stage": "opening",
+                "status": "missed",
+                "title_candidate_count": 1,
+                "title_candidates_examined": 1,
+                "jobs_count": 0,
+                "questions_count": 0,
+                "scripts_count": 0,
+                "job_requirements": "hidden JD",
+            },
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "rag_retrieval_failed",
+            agent_role="rag",
+            payload={
+                "stage": "opening",
+                "status": "failed",
+                "error_type": "RuntimeError",
+                "candidate_answer": "hidden answer",
+            },
+        )
+
+        metrics = self.store.get_rag_retrieval_metrics(hours=24, limit=10)
+        summary = metrics["summary"]
+        metrics_text = str(metrics)
+
+        self.assertEqual(summary["total_event_count"], 3)
+        self.assertEqual(summary["success_count"], 1)
+        self.assertEqual(summary["miss_count"], 1)
+        self.assertEqual(summary["failure_count"], 1)
+        self.assertEqual(summary["hit_rate"], 0.3333)
+        self.assertEqual(summary["job_title_matched_count"], 1)
+        self.assertEqual(summary["questions_count"], 5)
+        self.assertEqual(metrics["stages"][0]["stage"], "opening")
+        self.assertEqual(metrics["error_types"][0]["error_type"], "RuntimeError")
+        self.assertNotIn("query", metrics_text)
+        self.assertNotIn("hidden query", metrics_text)
+        self.assertNotIn("resume_text", metrics_text)
+        self.assertNotIn("hidden resume", metrics_text)
+        self.assertNotIn("hidden question document", metrics_text)
+        self.assertNotIn("hidden JD", metrics_text)
+        self.assertNotIn("candidate_answer", metrics_text)
+        self.assertNotIn("hidden answer", metrics_text)
+
     def test_skip_pending_turns_marks_only_unanswered_pending_turns(self):
         first_message = self.service.append_message(self.session_id, "assistant", "请先做自我介绍。")
         first = self.service.create_pending_turn(
@@ -232,6 +388,51 @@ class InterviewTurnServiceTests(unittest.TestCase):
         self.assertEqual(summary["coverage_rate"], 0.5)
         self.assertEqual(summary["failure_rate"], 0.5)
         self.assertEqual(session["status_counts"]["skipped"], 1)
+
+    def test_context_compaction_metrics_summarize_events_without_hidden_payload(self):
+        hidden_payload = {
+            "context_version": 2,
+            "last_turn_no": 7,
+            "estimated_tokens": 6200,
+            "threshold_tokens": 4800,
+            "open_thread_count": 3,
+            "candidate_facts": ["第3轮 候选人负责权限模块"],
+            "risk_signals": ["第7轮 缺少指标"],
+            "open_threads": ["第7轮后续：追问指标"],
+        }
+        self.store.record_agent_event(self.session_id, "context_compacted", payload=hidden_payload)
+        self.store.record_agent_event(
+            self.session_id,
+            "context_summary_failed",
+            payload={"reason": "timeout", "raw": "hidden text should not be returned"},
+        )
+        self.store.record_agent_event(
+            self.session_id,
+            "context_compacted",
+            payload={**hidden_payload, "context_version": 3, "last_turn_no": 8},
+        )
+
+        metrics = self.store.get_context_compaction_metrics(hours=24, limit=10)
+        summary = metrics["summary"]
+        session = metrics["sessions"][0]
+        metrics_text = str(metrics)
+
+        self.assertEqual(summary["session_count"], 1)
+        self.assertEqual(summary["compacted_session_count"], 1)
+        self.assertEqual(summary["context_compacted_event_count"], 2)
+        self.assertEqual(summary["context_summary_failure_event_count"], 1)
+        self.assertEqual(summary["latest_context_version"], 3)
+        self.assertEqual(summary["max_context_version"], 3)
+        self.assertEqual(summary["summary_failure_rate"], 0.3333)
+        self.assertEqual(session["last_turn_no"], 8)
+        self.assertEqual(session["estimated_tokens"], 6200)
+        self.assertEqual(session["threshold_tokens"], 4800)
+        self.assertEqual(session["open_thread_count"], 3)
+        self.assertEqual(metrics["failure_reasons"], [{"reason": "timeout", "count": 1}])
+        self.assertNotIn("candidate_facts", metrics_text)
+        self.assertNotIn("risk_signals", metrics_text)
+        self.assertNotIn("open_threads", metrics_text)
+        self.assertNotIn("hidden text should not be returned", metrics_text)
 
     def test_question_metadata_uses_keyword_inference(self):
         question_message = self.service.append_message(self.session_id, "assistant", "请讲一个性能优化案例。")
