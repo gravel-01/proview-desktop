@@ -76,7 +76,7 @@
 
 ### 下载桌面版
 
-1. 前往 [GitHub Release](https://github.com/gravel-01/proview-desktop/releases/tag/v0.1.0-alpha.1) 下载最新安装包
+1. 前往 [GitHub Release](https://github.com/gravel-01/proview-desktop/releases/tag/v0.1.1-alpha.2) 下载最新安装包
 2. 双击安装，首次启动后在**应用设置**中填入 API 密钥
 3. 开始使用
 
