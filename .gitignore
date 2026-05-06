@@ -88,6 +88,7 @@ instance/
 docs/_build/
 doc/upgrade
 doc/issues
+doc/interview
 
 # PyBuilder
 .pybuilder/
