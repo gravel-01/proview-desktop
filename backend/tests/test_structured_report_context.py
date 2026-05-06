@@ -59,6 +59,7 @@ class MockAgent:
 class MockEndSessionDataClient(MockStructuredReportDataClient):
     def __init__(self):
         self.calls = []
+        self.events = []
         self.turns = [
             {
                 "turn_id": "turn-1",
@@ -104,6 +105,29 @@ class MockEndSessionDataClient(MockStructuredReportDataClient):
         self.calls.append("save_eval_summary")
         return True
 
+    def storage_capabilities(self):
+        return {"agent_events": True}
+
+    def record_agent_event(
+        self,
+        session_id,
+        event_type,
+        *,
+        turn_id="",
+        agent_role="",
+        payload=None,
+    ):
+        self.events.append(
+            {
+                "session_id": session_id,
+                "event_type": event_type,
+                "turn_id": turn_id,
+                "agent_role": agent_role,
+                "payload": payload or {},
+            }
+        )
+        return True
+
 
 class MockEndAgent:
     def evaluate_interview(self, draft=None):
@@ -113,6 +137,11 @@ class MockEndAgent:
             "weaknesses": "待继续追问",
             "summary": "整体表现可继续观察",
         }
+
+
+class MockFailingEndAgent:
+    def evaluate_interview(self, draft=None):
+        raise RuntimeError("boom")
 
 
 class MockEndObserver:
@@ -226,6 +255,53 @@ class StructuredReportContextTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "success")
         self.assertEqual(observer.calls[:2], ["retry_failed_turn_evaluations", "shutdown"])
+
+    def test_end_session_records_report_generation_success_event_without_report_payload(self):
+        client = MockEndSessionDataClient()
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockEndAgent()
+
+        with app_module.app.test_request_context("/api/end", method="POST", json={"save_history": True}):
+            response = app_module.end_interview.__wrapped__(session_id="session-1")
+        payload = response.get_json()
+        events_text = str(client.events)
+
+        self.assertEqual(payload["status"], "success")
+        self.assertTrue([
+            event for event in client.events
+            if event["event_type"] == "final_report_generation_succeeded"
+            and event["agent_role"] == "reporter"
+        ])
+        self.assertNotIn("有量化结果", events_text)
+        self.assertNotIn("整体表现可继续观察", events_text)
+
+    def test_end_session_records_report_generation_failure_then_fallback_success(self):
+        client = MockEndSessionDataClient()
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockFailingEndAgent()
+
+        with app_module.app.test_request_context("/api/end", method="POST", json={"save_history": True}):
+            response = app_module.end_interview.__wrapped__(session_id="session-1")
+        payload = response.get_json()
+        event_types = [event["event_type"] for event in client.events]
+        success_event = next(
+            event for event in client.events
+            if event["event_type"] == "final_report_generation_succeeded"
+        )
+        failure_event = next(
+            event for event in client.events
+            if event["event_type"] == "final_report_generation_failed"
+        )
+        events_text = str(client.events)
+
+        self.assertEqual(payload["status"], "success")
+        self.assertIn("final_report_generation_failed", event_types)
+        self.assertIn("final_report_generation_succeeded", event_types)
+        self.assertEqual(failure_event["payload"]["reason"], "RuntimeError")
+        self.assertTrue(success_event["payload"]["fallback_used"])
+        self.assertEqual(success_event["payload"]["source"], "structured_fallback")
+        self.assertNotIn("说明了缓存和 P95 指标", events_text)
+        self.assertNotIn("追问缓存一致性", events_text)
 
 
 if __name__ == "__main__":

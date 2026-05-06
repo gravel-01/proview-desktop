@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -116,20 +117,83 @@ class MockContextCompactionDataClient:
         return {"id": len(self.messages), "session_id": session_id, "role": role, "content": content}
 
 
+class MockSummaryLLMClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def generate(self, messages, timeout=None):
+        self.calls.append({
+            "messages": messages,
+            "timeout": timeout,
+        })
+        return self.response
+
+
+class BlockingSummaryLLMClient:
+    def __init__(self, delay=0.2):
+        self.delay = delay
+        self.calls = []
+
+    def generate(self, messages, timeout=None):
+        self.calls.append({
+            "messages": messages,
+            "timeout": timeout,
+        })
+        time.sleep(self.delay)
+        return json.dumps({"candidate_facts": ["第1轮 延迟返回"]}, ensure_ascii=False)
+
+
+class MockSummaryAgent:
+    def __init__(self, llm_client):
+        self.llm_client = llm_client
+
+
+class MockSummaryChatAgent:
+    def __init__(self, llm_client, response="能继续讲一下权限模型的边界吗？"):
+        self.llm_client = llm_client
+        self.response = response
+        self.calls = []
+        self.chat_history = []
+        self.tools = []
+        self.agent_executor = None
+        self.prompt = "interviewer prompt"
+        self.model_name = "mock-model"
+
+    def run(self, query, context=None, trace_context=None):
+        self.calls.append({
+            "query": query,
+            "context": context or "",
+            "trace_context": trace_context or {},
+        })
+        self.chat_history.append({"role": "user", "content": query})
+        self.chat_history.append({"role": "assistant", "content": self.response})
+        return self.response, []
+
+    def get_chat_history(self):
+        return list(self.chat_history)
+
+
 class ContextCompactionTests(unittest.TestCase):
     def setUp(self):
         self.original_storage_available = app_module.STORAGE_AVAILABLE
         self.original_data_client = app_module.data_client
         self.original_checkpoints = dict(app_module._session_context_checkpoints)
         self.original_trace_contexts = dict(app_module._session_trace_contexts)
+        self.original_agents = dict(app_module._agents)
         self.original_checkpoint_dir = os.environ.get("PROVIEW_CONTEXT_CHECKPOINT_DIR")
+        self.original_summary_enabled = os.environ.get(app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV)
+        self.original_summary_timeout = os.environ.get(app_module.CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV)
         self.checkpoint_dir = os.path.join(os.path.dirname(__file__), ".codex_tmp_context_checkpoints")
         shutil.rmtree(self.checkpoint_dir, ignore_errors=True)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.environ["PROVIEW_CONTEXT_CHECKPOINT_DIR"] = self.checkpoint_dir
+        os.environ.pop(app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV, None)
+        os.environ.pop(app_module.CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV, None)
         app_module.STORAGE_AVAILABLE = True
         app_module._session_context_checkpoints.clear()
         app_module._session_trace_contexts.clear()
+        app_module._agents.clear()
         app_module._session_trace_contexts["session-1"] = {"context_version": 1}
 
     def tearDown(self):
@@ -139,10 +203,20 @@ class ContextCompactionTests(unittest.TestCase):
         app_module._session_context_checkpoints.update(self.original_checkpoints)
         app_module._session_trace_contexts.clear()
         app_module._session_trace_contexts.update(self.original_trace_contexts)
+        app_module._agents.clear()
+        app_module._agents.update(self.original_agents)
         if self.original_checkpoint_dir is None:
             os.environ.pop("PROVIEW_CONTEXT_CHECKPOINT_DIR", None)
         else:
             os.environ["PROVIEW_CONTEXT_CHECKPOINT_DIR"] = self.original_checkpoint_dir
+        if self.original_summary_enabled is None:
+            os.environ.pop(app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV, None)
+        else:
+            os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = self.original_summary_enabled
+        if self.original_summary_timeout is None:
+            os.environ.pop(app_module.CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV, None)
+        else:
+            os.environ[app_module.CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV] = self.original_summary_timeout
         shutil.rmtree(self.checkpoint_dir, ignore_errors=True)
 
     def test_context_compaction_builds_hidden_memory_card_and_event(self):
@@ -260,6 +334,135 @@ class ContextCompactionTests(unittest.TestCase):
 
         self.assertEqual(context, "")
         self.assertEqual(client.events, [])
+
+    def test_summary_agent_success_uses_normalized_checkpoint_fields(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        raw_summary = {
+            "recent_turns": [
+                {"turn_no": 6, "question": "请讲系统设计", "answer": "我拆了网关和任务队列。"},
+                {"turn_no": 7, "text": "候选人补充了监控和回滚。"},
+                "没有轮次的补充摘要",
+            ],
+            "covered_dimensions": ["架构设计", "score", "rubric", "架构设计"],
+            "candidate_facts": [
+                {"turn_no": 6, "fact": "候选人负责过异步队列改造。"},
+                "说明了团队协作和上线监控。",
+            ],
+            "risk_signals": [
+                {"turn_no": 7, "risk": "量化结果仍不够具体，score=6。"},
+            ],
+            "open_threads": [
+                {"turn_no": 7, "thread": "继续确认降级策略触发条件和恢复流程。"},
+            ],
+            "extra_field": ["should be ignored"],
+        }
+        llm_client = MockSummaryLLMClient(json.dumps(raw_summary, ensure_ascii=False))
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockSummaryAgent(llm_client)
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = "1"
+
+        context = app_module._build_interviewer_hidden_context("session-1")
+
+        payload = client.events[0]["payload"]
+        self.assertEqual(llm_client.calls[0]["timeout"], app_module.CONTEXT_SUMMARY_AGENT_DEFAULT_TIMEOUT_SECONDS)
+        self.assertIn("异步队列改造", context)
+        self.assertIn("第6轮", payload["candidate_facts"][0])
+        self.assertIn("截至第7轮", payload["candidate_facts"][1])
+        self.assertIn("降级策略触发条件", payload["open_threads"][0])
+        self.assertNotIn("extra_field", payload)
+        self.assertNotIn("score", "\n".join(payload["risk_signals"]))
+        self.assertNotIn("rubric", "\n".join(payload["covered_dimensions"]))
+        self.assertLessEqual(len(payload["recent_turns"]), 4)
+        self.assertEqual(payload["last_turn_no"], 7)
+        self.assertEqual(payload["context_version"], 2)
+
+    def test_summary_agent_failure_falls_back_to_deterministic_memory_card(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        llm_client = MockSummaryLLMClient("这不是 JSON")
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockSummaryAgent(llm_client)
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = "1"
+
+        context = app_module._build_context_compaction_context("session-1")
+
+        self.assertIn("核心模块设计", context)
+        compacted_events = [event for event in client.events if event["event_type"] == "context_compacted"]
+        failure_events = [event for event in client.events if event["event_type"] == "context_summary_failed"]
+        self.assertEqual(len(compacted_events), 1)
+        self.assertEqual(len(failure_events), 1)
+        self.assertIn("核心模块设计", "\n".join(compacted_events[0]["payload"]["candidate_facts"]))
+
+    def test_summary_agent_timeout_falls_back_without_blocking_long(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        llm_client = BlockingSummaryLLMClient(delay=0.2)
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockSummaryAgent(llm_client)
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = "1"
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV] = "0.01"
+
+        started = time.perf_counter()
+        context = app_module._build_context_compaction_context("session-1")
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.35)
+        self.assertIn("核心模块设计", context)
+        self.assertEqual(len([event for event in client.events if event["event_type"] == "context_compacted"]), 1)
+        self.assertEqual(len([event for event in client.events if event["event_type"] == "context_summary_failed"]), 1)
+
+    def test_summary_checkpoint_does_not_leak_to_messages_response_or_chat_history(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        raw_summary = {
+            "candidate_facts": ["第7轮 候选人负责过权限系统设计。"],
+            "open_threads": ["第7轮后续：追问权限模型边界。"],
+        }
+        llm_client = MockSummaryLLMClient(json.dumps(raw_summary, ensure_ascii=False))
+        agent = MockSummaryChatAgent(llm_client)
+        app_module.data_client = client
+        app_module._agents["session-1"] = agent
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = "1"
+
+        with app_module.app.test_request_context(
+            "/api/chat",
+            method="POST",
+            json={"message": "我主要做了权限模块。"},
+        ):
+            response = app_module.chat.__wrapped__(session_id="session-1")
+        payload = response.get_json()
+
+        visible_messages = "\n".join(message["content"] for message in client.messages)
+        chat_history = "\n".join(message["content"] for message in agent.get_chat_history())
+        self.assertEqual(payload["response"], agent.response)
+        self.assertIn("权限系统设计", agent.calls[0]["context"])
+        self.assertIn("追问权限模型边界", agent.calls[0]["context"])
+        self.assertNotIn("权限系统设计", payload["response"])
+        self.assertNotIn("追问权限模型边界", payload["response"])
+        self.assertNotIn("权限系统设计", visible_messages)
+        self.assertNotIn("追问权限模型边界", visible_messages)
+        self.assertNotIn("权限系统设计", chat_history)
+        self.assertNotIn("追问权限模型边界", chat_history)
+
+    def test_summary_checkpoint_rehydrates_without_duplicate_event_or_file(self):
+        client = MockContextCompactionDataClient(answer_size=900)
+        raw_summary = {
+            "candidate_facts": ["第7轮 候选人负责过权限系统设计。"],
+            "open_threads": ["第7轮后续：追问权限模型边界。"],
+        }
+        llm_client = MockSummaryLLMClient(json.dumps(raw_summary, ensure_ascii=False))
+        app_module.data_client = client
+        app_module._agents["session-1"] = MockSummaryAgent(llm_client)
+        os.environ[app_module.CONTEXT_SUMMARY_AGENT_ENABLED_ENV] = "1"
+
+        first = app_module._build_context_compaction_context("session-1")
+        checkpoint_dir = os.path.join(self.checkpoint_dir, "session-1", "context_checkpoints")
+        before = sorted(os.listdir(checkpoint_dir))
+        app_module._session_context_checkpoints.clear()
+        second = app_module._build_context_compaction_context("session-1")
+        after = sorted(os.listdir(checkpoint_dir))
+
+        self.assertEqual(first, second)
+        self.assertIn("权限系统设计", second)
+        self.assertEqual(len([event for event in client.events if event["event_type"] == "context_compacted"]), 1)
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

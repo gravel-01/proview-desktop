@@ -1,7 +1,9 @@
 import base64
+import inspect
 import os
 import re
 import socket
+import threading
 import uuid
 import json as json_mod
 import traceback
@@ -33,6 +35,7 @@ from services.career_planning_service import CareerPlanningService
 from services.career_planning_docs import CareerPlanningDocumentRepository
 from services.interview_turn_service import InterviewTurnService
 from utils.safe_log import configure_stdio, safe_log
+from learning.routes import learning_bp, set_data_client_provider as set_learning_data_client_provider
 from monitoring.routes import monitoring_bp, set_data_client_provider
 
 configure_stdio()
@@ -54,7 +57,9 @@ app.secret_key = SECRET_KEY
 CORS(app, origins=CORS_ORIGINS, supports_credentials=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 set_data_client_provider(lambda: data_client if STORAGE_AVAILABLE else None)
+set_learning_data_client_provider(lambda: data_client if STORAGE_AVAILABLE else None)
 app.register_blueprint(monitoring_bp)
+app.register_blueprint(learning_bp)
 
 def _reload_runtime_config_state() -> dict:
     global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
@@ -531,6 +536,24 @@ _session_context_checkpoints: dict[str, dict] = {}
 CONTEXT_COMPACTION_BUDGET_TOKENS = 8000
 CONTEXT_COMPACTION_TRIGGER_RATIO = 0.6
 CONTEXT_COMPACTION_MIN_TURNS = 6
+CONTEXT_SUMMARY_AGENT_ENABLED_ENV = "PROVIEW_CONTEXT_SUMMARY_AGENT_ENABLED"
+CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV = "PROVIEW_CONTEXT_SUMMARY_AGENT_TIMEOUT_SECONDS"
+CONTEXT_SUMMARY_AGENT_DEFAULT_TIMEOUT_SECONDS = 1.5
+CONTEXT_SUMMARY_AGENT_MAX_PROMPT_CHARS = 7000
+CONTEXT_CHECKPOINT_MEMORY_KEYS = (
+    "recent_turns",
+    "covered_dimensions",
+    "candidate_facts",
+    "risk_signals",
+    "open_threads",
+)
+CONTEXT_CHECKPOINT_FIELD_LIMITS = {
+    "recent_turns": (4, 180),
+    "covered_dimensions": (10, 40),
+    "candidate_facts": (6, 120),
+    "risk_signals": (6, 140),
+    "open_threads": (6, 140),
+}
 
 # Per-session 评估观察者
 try:
@@ -759,10 +782,120 @@ def _answer_pending_turn(session_id: str, *, answer_message, answer_text: str):
     )
 
 
-def _record_agent_event(session_id: str, event_type: str, *, turn_id: str = "", payload: dict | None = None):
+def _record_agent_event(
+    session_id: str,
+    event_type: str,
+    *,
+    turn_id: str = "",
+    agent_role: str = "interviewer",
+    payload: dict | None = None,
+):
     if STORAGE_AVAILABLE and data_client and turn_service:
-        _ensure_turn_service_client()
-        turn_service.record_event(session_id, event_type, turn_id=turn_id, payload=payload or {})
+        try:
+            _ensure_turn_service_client()
+            turn_service.record_event(
+                session_id,
+                event_type,
+                turn_id=turn_id,
+                agent_role=agent_role,
+                payload=payload or {},
+            )
+        except Exception as exc:
+            print(f"[app] record agent event failed: {exc}")
+
+
+def _record_final_report_event(
+    session_id: str,
+    event_type: str,
+    *,
+    route: str,
+    eval_result: dict | None = None,
+    fallback_used: bool = False,
+    reason: str = "",
+):
+    payload = {
+        "route": route,
+        "fallback_used": bool(fallback_used),
+    }
+    if reason:
+        payload["reason"] = str(reason)[:120]
+    if isinstance(eval_result, dict) and eval_result:
+        payload.update(
+            {
+                "source": str(eval_result.get("source") or "llm_or_agent")[:80],
+                "evaluation_count": len(eval_result.get("evaluations") or []),
+                "dimension_score_count": len(eval_result.get("dimension_scores") or []),
+                "evidence_count": len(eval_result.get("evidence") or []),
+                "next_training_plan_count": len(eval_result.get("next_training_plan") or []),
+                "has_summary": bool(str(eval_result.get("summary") or "").strip()),
+                "report_available": True,
+            }
+        )
+    else:
+        payload["report_available"] = False
+
+    _record_agent_event(
+        session_id,
+        event_type,
+        agent_role="reporter",
+        payload=payload,
+    )
+
+
+def _record_rag_retrieval_event(
+    session_id: str,
+    *,
+    stage: str,
+    status: str,
+    title_candidate_count: int = 0,
+    title_candidates_examined: int = 0,
+    job_title_matched: bool = False,
+    jobs_count: int = 0,
+    questions_count: int = 0,
+    scripts_count: int = 0,
+    duration_ms: int | None = None,
+    error_type: str = "",
+):
+    if not session_id:
+        return
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"succeeded", "missed", "failed"}:
+        normalized_status = "failed" if error_type else "missed"
+    event_type = {
+        "succeeded": "rag_retrieval_succeeded",
+        "missed": "rag_retrieval_missed",
+        "failed": "rag_retrieval_failed",
+    }[normalized_status]
+
+    def _count(value) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            return 0
+        return max(0, number)
+
+    payload = {
+        "stage": str(stage or "unknown").strip()[:60] or "unknown",
+        "status": normalized_status,
+        "job_title_matched": bool(job_title_matched),
+        "title_candidate_count": _count(title_candidate_count),
+        "title_candidates_examined": _count(title_candidates_examined),
+        "jobs_count": _count(jobs_count),
+        "questions_count": _count(questions_count),
+        "scripts_count": _count(scripts_count),
+    }
+    if duration_ms is not None:
+        payload["duration_ms"] = _count(duration_ms)
+    if error_type:
+        payload["error_type"] = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(error_type))[:80] or "unknown"
+
+    _record_agent_event(
+        session_id,
+        event_type,
+        agent_role="rag",
+        payload=payload,
+    )
 
 
 def _skip_pending_turns_before_end(session_id: str) -> int:
@@ -964,6 +1097,13 @@ def _get_or_create_context_checkpoint(session_id: str) -> dict:
         "estimated_tokens": estimated_tokens,
         **_build_context_checkpoint_memory_fields(answered_turns, metadata_rows, evaluation_rows),
     }
+    checkpoint = _build_llm_context_summary_checkpoint(
+        session_id,
+        checkpoint,
+        answered_turns=answered_turns,
+        metadata_rows=metadata_rows,
+        evaluation_rows=evaluation_rows,
+    )
     _session_context_checkpoints[session_id] = checkpoint
     payload = _context_checkpoint_event_payload(checkpoint, threshold)
     _record_agent_event(
@@ -991,6 +1131,343 @@ def _build_context_checkpoint_memory_fields(answered_turns: list, metadata_rows:
         "risk_signals": _checkpoint_risk_signals(answered_turns, evaluations_by_turn),
         "open_threads": _checkpoint_open_threads(answered_turns, metadata_by_turn, evaluations_by_turn),
     }
+
+
+def _build_llm_context_summary_checkpoint(
+    session_id: str,
+    deterministic_checkpoint: dict,
+    *,
+    answered_turns: list,
+    metadata_rows: list,
+    evaluation_rows: list,
+) -> dict:
+    if not _is_context_summary_agent_enabled():
+        return deterministic_checkpoint
+
+    agent = _agents.get(session_id)
+    llm_client = getattr(agent, "llm_client", None)
+    if not llm_client:
+        return deterministic_checkpoint
+
+    messages = _build_context_summary_agent_messages(
+        deterministic_checkpoint,
+        answered_turns=answered_turns,
+        metadata_rows=metadata_rows,
+        evaluation_rows=evaluation_rows,
+    )
+    timeout_seconds = _context_summary_agent_timeout_seconds()
+    try:
+        raw = _generate_context_summary_with_timeout(llm_client, messages, timeout_seconds)
+        summary_checkpoint = _normalize_llm_context_summary_checkpoint(raw, deterministic_checkpoint)
+        if summary_checkpoint:
+            return summary_checkpoint
+        _record_context_summary_failure(session_id, "json_parse_failed")
+    except TimeoutError:
+        _record_context_summary_failure(session_id, "timeout")
+    except Exception as exc:
+        _record_context_summary_failure(session_id, str(exc)[:200])
+    return deterministic_checkpoint
+
+
+def _is_context_summary_agent_enabled() -> bool:
+    return _is_truthy_env(os.getenv(CONTEXT_SUMMARY_AGENT_ENABLED_ENV))
+
+
+def _context_summary_agent_timeout_seconds() -> float:
+    raw_value = os.getenv(CONTEXT_SUMMARY_AGENT_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return CONTEXT_SUMMARY_AGENT_DEFAULT_TIMEOUT_SECONDS
+    try:
+        value = float(raw_value)
+    except Exception:
+        return CONTEXT_SUMMARY_AGENT_DEFAULT_TIMEOUT_SECONDS
+    if value <= 0:
+        return CONTEXT_SUMMARY_AGENT_DEFAULT_TIMEOUT_SECONDS
+    return min(value, 5.0)
+
+
+def _build_context_summary_agent_messages(
+    checkpoint: dict,
+    *,
+    answered_turns: list,
+    metadata_rows: list,
+    evaluation_rows: list,
+) -> list:
+    source = {
+        "last_turn_no": _positive_int(checkpoint.get("last_turn_no")),
+        "deterministic_checkpoint": {
+            key: checkpoint.get(key) or []
+            for key in CONTEXT_CHECKPOINT_MEMORY_KEYS
+        },
+        "turns": _context_summary_prompt_turns(answered_turns, limit=16),
+        "question_metadata": _context_summary_prompt_metadata(metadata_rows, limit=16),
+        "turn_evaluations": _context_summary_prompt_evaluations(evaluation_rows, limit=16),
+    }
+    source_json = json_mod.dumps(source, ensure_ascii=False, separators=(",", ":"))
+    if len(source_json) > CONTEXT_SUMMARY_AGENT_MAX_PROMPT_CHARS:
+        source["turns"] = _context_summary_prompt_turns(answered_turns, limit=8)
+        source["question_metadata"] = _context_summary_prompt_metadata(metadata_rows, limit=8)
+        source["turn_evaluations"] = _context_summary_prompt_evaluations(evaluation_rows, limit=8)
+        source_json = json_mod.dumps(source, ensure_ascii=False, separators=(",", ":"))
+    if len(source_json) > CONTEXT_SUMMARY_AGENT_MAX_PROMPT_CHARS:
+        source_json = source_json[:CONTEXT_SUMMARY_AGENT_MAX_PROMPT_CHARS]
+
+    user_prompt = (
+        "请把以下结构化面试历史压缩成后台隐藏 context checkpoint summary。\n"
+        "只允许输出一个 JSON object，字段必须保持为："
+        "recent_turns, covered_dimensions, candidate_facts, risk_signals, open_threads。\n"
+        "要求：每个字段输出数组；recent_turns 最多4条，covered_dimensions最多10条，其余最多6条；"
+        "除 covered_dimensions 外，每条都要保留 turn_no 线索，例如“第3轮 ...”或“截至第7轮 ...”。\n"
+        "不要输出 score、rubric、pass_criteria、evidence、suggestion 等内部术语；不要编造候选人没说过的事实。\n\n"
+        f"结构化输入：\n{source_json}"
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 ProView 后台 Summary Agent。候选人永远看不到你的输出。"
+                "你只做上下文压缩，只输出 JSON，不输出 Markdown 或解释。"
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _context_summary_prompt_turns(turns: list, *, limit: int) -> list:
+    rows = []
+    for turn in sorted([item for item in turns or [] if isinstance(item, dict)], key=lambda item: int(item.get("turn_no") or 0))[-limit:]:
+        rows.append({
+            "turn_no": _positive_int(turn.get("turn_no")),
+            "question": _short_text(turn.get("question_text"), 160),
+            "answer": _short_text(turn.get("answer_text"), 240),
+        })
+    return rows
+
+
+def _context_summary_prompt_metadata(metadata_rows: list, *, limit: int) -> list:
+    rows = []
+    for row in sorted([item for item in metadata_rows or [] if isinstance(item, dict)], key=lambda item: int(item.get("turn_no") or 0))[-limit:]:
+        dimensions = []
+        for dimension in row.get("dimensions") or []:
+            if isinstance(dimension, dict):
+                name = str(dimension.get("name") or "").strip()
+                if name:
+                    dimensions.append(name)
+        rows.append({
+            "turn_no": _positive_int(row.get("turn_no")),
+            "dimensions": _dedupe_nonempty(dimensions)[:2],
+        })
+    return rows
+
+
+def _context_summary_prompt_evaluations(evaluation_rows: list, *, limit: int) -> list:
+    rows = []
+    for row in sorted([item for item in evaluation_rows or [] if isinstance(item, dict)], key=lambda item: int(item.get("turn_no") or 0))[-limit:]:
+        rows.append({
+            "turn_no": _positive_int(row.get("turn_no")),
+            "dimension": _short_text(row.get("dimension"), 40),
+            "pass_level": _short_text(row.get("pass_level"), 30),
+            "evidence": _short_text(row.get("evidence"), 120),
+            "suggestion": _short_text(row.get("suggestion"), 120),
+        })
+    return rows
+
+
+def _generate_context_summary_with_timeout(llm_client, messages: list, timeout_seconds: float) -> str:
+    result_box = {"value": "", "error": None}
+
+    def _target() -> None:
+        try:
+            result_box["value"] = _call_context_summary_llm(llm_client, messages, timeout_seconds)
+        except Exception as exc:
+            result_box["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.01, timeout_seconds))
+    if worker.is_alive():
+        raise TimeoutError("context summary agent timed out")
+    if result_box["error"]:
+        raise result_box["error"]
+    return str(result_box["value"] or "")
+
+
+def _call_context_summary_llm(llm_client, messages: list, timeout_seconds: float) -> str:
+    generate = getattr(llm_client, "generate")
+    try:
+        signature = inspect.signature(generate)
+        parameters = signature.parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except Exception:
+        accepts_timeout = False
+    if accepts_timeout:
+        return generate(messages, timeout=timeout_seconds)
+    return generate(messages)
+
+
+def _normalize_llm_context_summary_checkpoint(raw_summary, deterministic_checkpoint: dict) -> dict:
+    summary = _parse_context_summary_json(raw_summary)
+    if not summary:
+        return {}
+
+    last_turn_no = _positive_int(deterministic_checkpoint.get("last_turn_no"))
+    normalized = {
+        "context_version": _positive_int(deterministic_checkpoint.get("context_version")) or 1,
+        "last_turn_no": last_turn_no,
+        "estimated_tokens": _positive_int(deterministic_checkpoint.get("estimated_tokens")),
+    }
+    accepted_any = False
+    for key in CONTEXT_CHECKPOINT_MEMORY_KEYS:
+        fallback = deterministic_checkpoint.get(key) or []
+        value = _normalize_context_summary_field(key, summary.get(key), last_turn_no=last_turn_no)
+        if value:
+            normalized[key] = value
+            accepted_any = True
+        else:
+            normalized[key] = _checkpoint_payload_list(
+                fallback,
+                limit=CONTEXT_CHECKPOINT_FIELD_LIMITS[key][0],
+                text_limit=CONTEXT_CHECKPOINT_FIELD_LIMITS[key][1],
+            )
+    return normalized if accepted_any else {}
+
+
+def _parse_context_summary_json(raw_summary) -> dict:
+    if isinstance(raw_summary, dict):
+        return raw_summary
+    raw_text = str(raw_summary or "").strip()
+    if not raw_text:
+        return {}
+    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE).strip()
+    raw_text = re.sub(r"\s*```$", "", raw_text).strip()
+    try:
+        value = json_mod.loads(raw_text)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw_text)
+    if not match:
+        return {}
+    try:
+        value = json_mod.loads(match.group())
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_context_summary_field(key: str, value, *, last_turn_no: int) -> list:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, dict):
+        known_item_keys = {
+            "turn_no",
+            "turn",
+            "turnNo",
+            "text",
+            "summary",
+            "fact",
+            "risk",
+            "thread",
+            "focus",
+            "note",
+            "content",
+            "value",
+            "question",
+            "answer",
+            "name",
+            "dimension",
+        }
+        value = [value] if any(item_key in value for item_key in known_item_keys) else list(value.values())
+    if not isinstance(value, list):
+        value = re.split(r"[\n；;]+", str(value))
+
+    limit, text_limit = CONTEXT_CHECKPOINT_FIELD_LIMITS[key]
+    items = []
+    for item in value:
+        text = _context_summary_item_to_text(key, item, last_turn_no=last_turn_no, text_limit=text_limit)
+        if text:
+            items.append(text)
+    return _dedupe_nonempty(items)[:limit]
+
+
+def _context_summary_item_to_text(key: str, item, *, last_turn_no: int, text_limit: int) -> str:
+    if key == "covered_dimensions":
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("dimension") or item.get("text") or item.get("value")
+        text = _strip_internal_terms(_plain_dimension_name(item)).strip(" ：:，,。.-")
+        if not text:
+            return ""
+        return _short_text(text, text_limit)
+
+    turn_no = 0
+    text = ""
+    if isinstance(item, dict):
+        turn_no = _positive_int(item.get("turn_no") or item.get("turn") or item.get("turnNo"))
+        if key == "recent_turns" and (item.get("question") or item.get("answer")):
+            question = _sanitize_context_summary_text(item.get("question"), 72)
+            answer = _sanitize_context_summary_text(item.get("answer"), 96)
+            text = f"问:{question} 答:{answer}".strip()
+        else:
+            text = _first_nonempty_context_summary_value(
+                item,
+                "text",
+                "summary",
+                "fact",
+                "risk",
+                "thread",
+                "focus",
+                "note",
+                "content",
+                "value",
+            )
+    else:
+        text = str(item or "")
+
+    text = _sanitize_context_summary_text(text, text_limit)
+    if not text:
+        return ""
+    if re.search(r"第\s*\d+\s*轮", text) or text.startswith("截至第"):
+        return text
+
+    if turn_no > 0:
+        if key == "open_threads":
+            return f"第{turn_no}轮后续：{text}"
+        return f"第{turn_no}轮 {text}"
+    if last_turn_no > 0:
+        return f"截至第{last_turn_no}轮：{text}"
+    return text
+
+
+def _first_nonempty_context_summary_value(item: dict, *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _sanitize_context_summary_text(value, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"[{}\[\]]+", "", text)
+    text = re.sub(r"(?i)\b(score|rubric|dimension|pass_criteria|evidence|suggestion)\b\s*[:=：]?\s*\d*", "", text)
+    text = re.sub(r"(评分|维度|证据|建议)\s*[:=：]?\s*\d*", "", text)
+    text = _strip_internal_terms(text)
+    text = text.strip(" ：:，,。.-")
+    return _short_text(text, limit)
+
+
+def _record_context_summary_failure(session_id: str, reason: str) -> None:
+    try:
+        _record_agent_event(
+            session_id,
+            "context_summary_failed",
+            payload={"reason": str(reason or "unknown")[:200]},
+        )
+    except Exception:
+        pass
 
 
 def _rehydrate_context_checkpoint_from_events(session_id: str, *, max_last_turn_no: int | None = None) -> dict:
@@ -1038,17 +1515,16 @@ def _context_checkpoint_from_event_payload(payload: dict) -> dict:
     last_turn_no = _positive_int(payload.get("last_turn_no"))
     if not last_turn_no:
         return {}
-    memory_keys = ("recent_turns", "covered_dimensions", "candidate_facts", "risk_signals", "open_threads")
     return {
         "context_version": _positive_int(payload.get("context_version")) or 1,
         "last_turn_no": last_turn_no,
         "estimated_tokens": _positive_int(payload.get("estimated_tokens")),
-        "recent_turns": _checkpoint_payload_list(payload.get("recent_turns"), limit=4),
-        "covered_dimensions": _checkpoint_payload_list(payload.get("covered_dimensions"), limit=10),
-        "candidate_facts": _checkpoint_payload_list(payload.get("candidate_facts"), limit=6),
-        "risk_signals": _checkpoint_payload_list(payload.get("risk_signals"), limit=6),
-        "open_threads": _checkpoint_payload_list(payload.get("open_threads"), limit=6),
-        "_needs_memory_card_refresh": not all(key in payload for key in memory_keys),
+        "recent_turns": _checkpoint_payload_list(payload.get("recent_turns"), limit=4, text_limit=180),
+        "covered_dimensions": _checkpoint_payload_list(payload.get("covered_dimensions"), limit=10, text_limit=40),
+        "candidate_facts": _checkpoint_payload_list(payload.get("candidate_facts"), limit=6, text_limit=120),
+        "risk_signals": _checkpoint_payload_list(payload.get("risk_signals"), limit=6, text_limit=140),
+        "open_threads": _checkpoint_payload_list(payload.get("open_threads"), limit=6, text_limit=140),
+        "_needs_memory_card_refresh": not all(key in payload for key in CONTEXT_CHECKPOINT_MEMORY_KEYS),
     }
 
 
@@ -1058,11 +1534,11 @@ def _context_checkpoint_event_payload(checkpoint: dict, threshold_tokens: int) -
         "last_turn_no": _positive_int(checkpoint.get("last_turn_no")),
         "estimated_tokens": _positive_int(checkpoint.get("estimated_tokens")),
         "threshold_tokens": threshold_tokens,
-        "recent_turns": _checkpoint_payload_list(checkpoint.get("recent_turns"), limit=4),
-        "covered_dimensions": _checkpoint_payload_list(checkpoint.get("covered_dimensions"), limit=10),
-        "candidate_facts": _checkpoint_payload_list(checkpoint.get("candidate_facts"), limit=6),
-        "risk_signals": _checkpoint_payload_list(checkpoint.get("risk_signals"), limit=6),
-        "open_threads": _checkpoint_payload_list(checkpoint.get("open_threads"), limit=6),
+        "recent_turns": _checkpoint_payload_list(checkpoint.get("recent_turns"), limit=4, text_limit=180),
+        "covered_dimensions": _checkpoint_payload_list(checkpoint.get("covered_dimensions"), limit=10, text_limit=40),
+        "candidate_facts": _checkpoint_payload_list(checkpoint.get("candidate_facts"), limit=6, text_limit=120),
+        "risk_signals": _checkpoint_payload_list(checkpoint.get("risk_signals"), limit=6, text_limit=140),
+        "open_threads": _checkpoint_payload_list(checkpoint.get("open_threads"), limit=6, text_limit=140),
         "open_thread_count": len(checkpoint.get("open_threads") or []),
     }
 
@@ -1114,10 +1590,13 @@ def _atomic_write_json(path: str, document: dict) -> None:
     os.replace(tmp_path, path)
 
 
-def _checkpoint_payload_list(value, *, limit: int) -> list:
+def _checkpoint_payload_list(value, *, limit: int, text_limit: int | None = None) -> list:
     if not isinstance(value, list):
         return []
-    return _dedupe_nonempty(value)[:limit]
+    items = _dedupe_nonempty(value)
+    if text_limit:
+        items = [_short_text(item, text_limit) for item in items]
+    return items[:limit]
 
 
 def _positive_int(value) -> int:
@@ -1491,6 +1970,7 @@ def _forbid_runtime_config_if_needed():
 
 def _retrieve_rag_context(
     *,
+    session_id: str = "",
     job_title: str,
     difficulty: str,
     interview_type: str,
@@ -1509,7 +1989,9 @@ def _retrieve_rag_context(
             status="not_started",
         )
 
+    started_at = datetime.now()
     resume_keywords = str(resume_text or "").strip()[:300]
+    title_candidates = _build_job_title_candidates(job_title)
     last_debug = _build_rag_debug_details(
         query="",
         job_title=job_title,
@@ -1519,8 +2001,12 @@ def _retrieve_rag_context(
         stage=stage,
         status="empty",
     )
+    had_exception = False
+    last_error_type = ""
+    title_candidates_examined = 0
 
-    for title_candidate in _build_job_title_candidates(job_title):
+    for title_candidate in title_candidates:
+        title_candidates_examined += 1
         rag_parts = []
         jobs = []
         questions = []
@@ -1598,8 +2084,23 @@ def _retrieve_rag_context(
             last_debug = debug
 
             if rag_parts:
+                duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+                _record_rag_retrieval_event(
+                    session_id,
+                    stage=stage,
+                    status="succeeded",
+                    title_candidate_count=len(title_candidates),
+                    title_candidates_examined=title_candidates_examined,
+                    job_title_matched=bool(jobs),
+                    jobs_count=len(jobs),
+                    questions_count=len(questions),
+                    scripts_count=len(scripts),
+                    duration_ms=duration_ms,
+                )
                 return "\n\n".join(rag_parts), debug
         except Exception as exc:
+            had_exception = True
+            last_error_type = type(exc).__name__
             last_debug = _build_rag_debug_details(
                 query=enriched_query,
                 job_title=title_candidate,
@@ -1615,6 +2116,21 @@ def _retrieve_rag_context(
             )
             print(f"[WARN] RAG retrieval failed for {title_candidate}: {exc}")
 
+    counts = last_debug.get("counts") if isinstance(last_debug, dict) else {}
+    duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+    _record_rag_retrieval_event(
+        session_id,
+        stage=stage,
+        status="failed" if had_exception else "missed",
+        title_candidate_count=len(title_candidates),
+        title_candidates_examined=title_candidates_examined,
+        job_title_matched=bool((counts or {}).get("jobs")),
+        jobs_count=(counts or {}).get("jobs", 0),
+        questions_count=(counts or {}).get("questions", 0),
+        scripts_count=(counts or {}).get("scripts", 0),
+        duration_ms=duration_ms,
+        error_type=last_error_type if had_exception else "",
+    )
     return "", last_debug
 
 
@@ -2453,6 +2969,7 @@ def setup_interview():
             def _task_rag():
                 """RAG 检索（用 OCR 原文片段代替 LLM 摘要做查询 enrichment）。"""
                 return _retrieve_rag_context(
+                    session_id=session_id,
                     job_title=job_title,
                     difficulty=difficulty,
                     interview_type=interview_type,
@@ -2817,6 +3334,7 @@ def setup_interview_stream():
 
                 yield _sse_event("stage", {"stage": "正在检索知识库..."})
                 rag_context, rag_debug_details = _retrieve_rag_context(
+                    session_id=session_id,
                     job_title=job_title,
                     difficulty=difficulty,
                     interview_type=interview_type,
@@ -2976,6 +3494,9 @@ def end_interview_stream(session_id):
 
     def generate():
         eval_result = {}
+        report_fallback_used = False
+        report_generation_failed = False
+        report_failure_reason = ""
         if not save_history:
             yield _sse_event("stage", {"stage": "正在结束本次面试..."})
 
@@ -3022,9 +3543,26 @@ def end_interview_stream(session_id):
                     eval_result = agent.evaluate_interview()
             except Exception as e:
                 print(f"[end-stream] AI 评估失败: {e}")
+                report_generation_failed = True
+                report_failure_reason = type(e).__name__
+        else:
+            report_generation_failed = True
+            report_failure_reason = "agent_unavailable"
         if not eval_result:
+            report_fallback_used = True
+            if not report_generation_failed:
+                report_generation_failed = True
+                report_failure_reason = "empty_report_result"
             eval_result = _build_fallback_eval_result_from_structured_data(session_id, draft)
         eval_result = _normalize_final_eval_result(eval_result, session_id=session_id, draft=draft)
+        if report_generation_failed:
+            _record_final_report_event(
+                session_id,
+                "final_report_generation_failed",
+                route="end_stream",
+                fallback_used=report_fallback_used,
+                reason=report_failure_reason or "unknown",
+            )
 
         if STORAGE_AVAILABLE:
             _skip_pending_turns_before_end(session_id)
@@ -3045,6 +3583,13 @@ def end_interview_stream(session_id):
                 strengths=eval_result.get("strengths", ""),
                 weaknesses=eval_result.get("weaknesses", ""),
                 summary=eval_result.get("summary", ""),
+            )
+            _record_final_report_event(
+                session_id,
+                "final_report_generation_succeeded",
+                route="end_stream",
+                eval_result=eval_result,
+                fallback_used=report_fallback_used,
             )
         else:
             stats = None
@@ -3913,6 +4458,9 @@ def end_interview(session_id):
         return jsonify(payload)
 
     # 调用 AI 生成真实评估（优先注入结构化 turn/metadata/evaluation，再回退到 agent 内存）
+    report_fallback_used = False
+    report_generation_failed = False
+    report_failure_reason = ""
     if agent:
         try:
             eval_prompt = _build_eval_prompt(agent, draft=draft, session_id=session_id)
@@ -3923,9 +4471,26 @@ def end_interview(session_id):
             print(f"[end] AI 评估完成: {list(eval_result.keys())}")
         except Exception as e:
             print(f"[end] AI 评估失败: {e}")
+            report_generation_failed = True
+            report_failure_reason = type(e).__name__
+    else:
+        report_generation_failed = True
+        report_failure_reason = "agent_unavailable"
     if not eval_result:
+        report_fallback_used = True
+        if not report_generation_failed:
+            report_generation_failed = True
+            report_failure_reason = "empty_report_result"
         eval_result = _build_fallback_eval_result_from_structured_data(session_id, draft)
     eval_result = _normalize_final_eval_result(eval_result, session_id=session_id, draft=draft)
+    if report_generation_failed:
+        _record_final_report_event(
+            session_id,
+            "final_report_generation_failed",
+            route="end",
+            fallback_used=report_fallback_used,
+            reason=report_failure_reason or "unknown",
+        )
 
     if STORAGE_AVAILABLE:
         _skip_pending_turns_before_end(session_id)
@@ -3961,6 +4526,13 @@ def end_interview(session_id):
             strengths=eval_result.get("strengths", ""),
             weaknesses=eval_result.get("weaknesses", ""),
             summary=eval_result.get("summary", ""),
+        )
+        _record_final_report_event(
+            session_id,
+            "final_report_generation_succeeded",
+            route="end",
+            eval_result=eval_result,
+            fallback_used=report_fallback_used,
         )
         revoke_session(session_id)
         _clear_session_runtime(session_id)
