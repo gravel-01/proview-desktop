@@ -1193,7 +1193,17 @@ onBeforeUnmount(() => {
     >
       <BlobBackground v-if="!shouldUseCleanMain" />
       <div class="relative z-10 min-h-full">
-        <div v-if="!isGuestPage" class="pointer-events-none absolute right-4 top-4 z-20 flex items-center gap-2 sm:gap-3 md:hidden">
+        <div v-if="!isGuestPage" class="pointer-events-none absolute right-4 top-4 z-20 flex flex-col items-end gap-2 sm:gap-3">
+          <div class="app-powered-by-badge pointer-events-none">
+            <span class="app-powered-by-badge__chip">
+              <Sparkles class="h-4 w-4" />
+            </span>
+            <span class="app-powered-by-badge__text">
+              <span class="app-powered-by-badge__label">Powered by</span>
+              <span class="app-powered-by-badge__value">ERINE + PaddleOCR + ROCm</span>
+            </span>
+          </div>
+          <div class="pointer-events-none flex items-center gap-2 sm:gap-3">
           <button
             type="button"
             class="app-theme-switch pointer-events-auto"
@@ -1221,6 +1231,7 @@ onBeforeUnmount(() => {
             <Settings class="h-4 w-4" />
             <span class="hidden sm:inline">应用设置</span>
           </button>
+          </div>
         </div>
         <div
           class="container mx-auto max-w-7xl px-4 sm:px-8"
@@ -1276,7 +1287,77 @@ onBeforeUnmount(() => {
   --sidebar-logo-bg: var(--ui-sidebar-logo-bg);
   --sidebar-logo-fg: var(--ui-sidebar-logo-fg);
   background: var(--ui-shell-background);
+  color: #4a5f90;
+}
+
+.app-powered-by-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.66rem 0.95rem 0.66rem 0.82rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 180, 214, 0.65);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 248, 251, 0.84)) padding-box,
+    linear-gradient(135deg, rgba(255, 118, 188, 0.95), rgba(124, 195, 255, 0.95), rgba(255, 206, 110, 0.9)) border-box;
+  box-shadow:
+    0 14px 28px rgba(255, 147, 192, 0.16),
+    0 2px 8px rgba(255, 255, 255, 0.78) inset;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  white-space: nowrap;
+}
+
+.app-powered-by-badge__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, rgba(255, 115, 185, 0.96), rgba(125, 194, 255, 0.96));
+  color: white;
+  box-shadow: 0 8px 18px rgba(255, 128, 183, 0.24);
+  flex: none;
+}
+
+.app-powered-by-badge__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+}
+
+.app-powered-by-badge__label {
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(113, 88, 121, 0.78);
+}
+
+.app-powered-by-badge__value {
+  font-size: 0.93rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
   color: var(--ui-text-primary);
+}
+
+:global(.dark) .app-powered-by-badge {
+  border-color: rgba(255, 168, 208, 0.34);
+  background:
+    linear-gradient(135deg, rgba(18, 21, 31, 0.88), rgba(30, 34, 48, 0.84)) padding-box,
+    linear-gradient(135deg, rgba(255, 123, 188, 0.92), rgba(118, 197, 255, 0.92), rgba(255, 198, 105, 0.84)) border-box;
+  box-shadow:
+    0 16px 32px rgba(0, 0, 0, 0.22),
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+}
+
+:global(.dark) .app-powered-by-badge__label {
+  color: rgba(249, 241, 249, 0.92);
+}
+
+:global(.dark) .app-powered-by-badge__value {
+  color: #f6f4ff;
 }
 
 .app-sidebar {
