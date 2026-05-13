@@ -34,6 +34,15 @@ database/*.sqlite
 database/*.sqlite-*
 database/*.sqlite3
 database/*.sqlite3-*
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+backend/data/*.sqlite3
+backend/data/*.sqlite3-*
+database/interviews.db
+database/interviews.db-wal
+database/interviews.db-shm
 backend/temp/
 backend/ocr_outputs/
 backend/uploaded_resumes/
@@ -66,6 +75,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+.env
 
 # Translations
 *.mo

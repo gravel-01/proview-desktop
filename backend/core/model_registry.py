@@ -41,7 +41,7 @@ def init_providers(
         "ernie": ModelProvider(
             key="ernie",
             label="文心一言",
-            model="ernie-4.5-turbo-128k",
+            model="ERNIE-4.5-21B-A3B",
             api_key=ernie_api_key or "",
             base_url=ernie_base_url,
             available=bool(ernie_api_key),
@@ -76,7 +76,7 @@ def get_default_provider() -> ModelProvider:
             return p
     # 全部不可用时返回 ernie（会在 Agent 层降级为 mock）
     return _providers.get("ernie", ModelProvider(
-        key="ernie", label="文心一言", model="ernie-4.5-turbo-128k",
+        key="ernie", label="文心一言", model="ERNIE-4.5-21B-A3B",
         api_key="", base_url="https://aistudio.baidu.com/llm/lmapi/v3", available=False
     ))
 
