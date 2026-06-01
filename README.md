@@ -146,14 +146,14 @@ npx electron .
 ---
 
 
-##  架构设计 (Architecture)
+##  架构设计 
 
 本项并非简单地将候选人交互塞进大模型对话框，而是采用了一套**基于真实面试流程流转的 LLM 工程架构**。
 
 为了兼顾「前端低延迟长对话」与「后端繁重的结构化评估」，项目核心设计包含：
 * **主旁路异步隔离**：Interview Agent 负责可见主链路提问，打分（Evaluation）与上下文压缩（Memory）放在异步旁路，保障对话顺畅不断线。
 * **Output / Metadata 边界隔离**：自然对话抛给前台，评分 Rubric 与隐藏状态机下沉至后端，杜绝长 JSON 导致的前端卡顿与密钥泄露。
-* **精细化 RAG (Context Selector)**：拒绝全量资料灌装，每轮提问前仅裁剪并组装当前最迫切的评估口径。
+* **精细化 RAG**：拒绝全量资料灌装，每轮提问前仅裁剪并组装当前最迫切的评估口径。
 
 >  完整的系统分层架构图、多 Agent 隔离机制以及高可用演进计划，请移步查阅：
 >  [ProView AI Interviewer 详细架构说明文档](https://gravel-01.github.io/architecture.html)
