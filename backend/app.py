@@ -2604,6 +2604,49 @@ def _merge_job_title_with_report_context(job_title: str, report_context: dict | 
     return f"{merged_job_title}\n" + "\n".join(summary_bits)
 
 
+@app.route('/api/resume/parse', methods=['POST'])
+def parse_resume_for_builder():
+    """将上传简历解析为简历生成器使用的结构化数据。"""
+    if not ANALYZER_AVAILABLE:
+        return jsonify({"status": "error", "message": "简历分析模块不可用"}), 503
+
+    if 'file' not in request.files:
+        return jsonify({"status": "error", "message": "未上传文件"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "文件名为空"}), 400
+
+    try:
+        _, file_path = _save_uploaded_resume(file)
+        extraction = _extract_resume_payload(file_path, include_images=False)
+        if not extraction["success"]:
+            message = extraction["error_message"] or "简历内容提取失败"
+            return jsonify({"status": "error", "message": message}), 400
+
+        resume_text = extraction["text"]
+        if not _has_usable_resume_text(resume_text):
+            return jsonify({
+                "status": "error",
+                "message": "简历内容提取失败或内容过少，请确保文件清晰可读"
+            }), 400
+
+        analyzer = ResumeAnalyzer(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        builder_data = analyzer._extract_builder_data(resume_text)
+        return jsonify({
+            "status": "success",
+            "data": builder_data,
+            "raw_text": resume_text[:3000],
+        })
+    except ResumeOcrUnavailableError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 503
+    except ResumeExtractionError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/resume/analyze-stream', methods=['POST'])
 def analyze_resume_stream():
     """流式简历分析：通过 SSE 实时输出 LLM 思考过程。
@@ -2897,11 +2940,16 @@ def polish_resume_builder():
 - "id": 唯一标识，格式 "sug_001", "sug_002" 等
 - "moduleId": 对应模块的 id
 - "entryId": 如果是时间线条目，提供 entry 的 id；否则为 null
-- "fieldPath": 字段路径，如 "detail"、"content" 等
-- "originalText": 原始文本片段（不超过 200 字）
+- "fieldPath": 只能是 "detail" 或 "content"
+- "originalText": 原始文本片段（不超过 200 字，必须能在对应 detail/content 中逐字找到）
 - "suggestedText": 优化后的文本
 - "reason": 优化理由（简洁说明，不超过 50 字）
 - "status": 固定为 "pending"
+
+限制：
+- 时间线条目只能优化 entry 的 "detail" 字段，不能修改 orgName、role、timeStart、timeEnd、isCurrent 等结构字段
+- 普通文本模块只能优化 "content" 字段
+- 不要对 tags、skillBars、intention 等结构化字段生成建议
 
 请严格输出 JSON 数组，不要输出任何其他内容。不要用 markdown 代码块包裹。
 如果某个模块没有明显可优化的地方，就不要为它生成建议。
@@ -2918,6 +2966,7 @@ def polish_resume_builder():
         # 调用 LLM
         raw_response = analyzer.client.generate(messages)
         suggestions = analyzer._parse_json_array(raw_response, fallback_id_prefix="sug")
+        suggestions = analyzer.validate_builder_polish_suggestions(suggestions, modules)
 
         return jsonify({
             "status": "success",
