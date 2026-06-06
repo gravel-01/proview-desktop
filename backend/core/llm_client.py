@@ -26,7 +26,7 @@ class OpenAICompatibleClient:
             return answer
         except Exception as e:
             print(f"调用LLM API时发生错误: {e}")
-            return "错误:调用语言模型服务时出错。"
+            return f"错误: 调用语言模型服务时出错: {e}"
 
     def generate_stream(self, messages: list) -> Generator[str, None, None]:
         """流式调用 LLM API，逐 chunk 返回文本片段（仅 content）。"""

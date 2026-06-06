@@ -177,6 +177,38 @@ npm run pack
 - 打包日志归档
 - 产物检查
 
+### macOS Apple Silicon 打包
+
+Mac 版必须在 macOS 上构建，尤其是后端 PyInstaller 产物不能从 Windows 交叉生成。M 系列芯片请在原生 arm64 终端运行，不要通过 Rosetta 启动终端。
+
+在 M 系列 Mac 上准备依赖后运行：
+
+```bash
+python3 -m pip install -r backend/requirements.txt
+npm install --prefix desktop
+bash ./package-desktop-mac.sh
+```
+
+这个脚本会：
+
+- 构建桌面前端
+- 打包 macOS arm64 后端
+- 下载并打包 Playwright Chromium，避免 Mac 版默认依赖 Windows Edge
+- 生成 macOS `.dmg` 和 `.zip`
+
+输出目录：
+
+- `desktop/release/`
+
+Mac 产物命名格式：
+
+```text
+ProView AI Interviewer-Mac-1.0.0-arm64.dmg
+ProView AI Interviewer-Mac-1.0.0-arm64.zip
+```
+
+如果没有 Apple Developer 签名和公证，macOS 首次打开时可能需要在系统设置里允许运行，或右键选择打开。
+
 ## 桌面开发常见问题
 
 ### 启动后白屏或提示找不到资源

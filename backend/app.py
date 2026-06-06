@@ -18,7 +18,8 @@ import config as app_config
 from config import (
     UPLOAD_FOLDER, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
     SECRET_KEY, CORS_ORIGINS, BAIDU_APP_KEY, BAIDU_SECRET_KEY,
-    ERNIE_API_KEY, ERNIE_BASE_URL, RAG_DB_PATH, PDF_OUTPUT_DIR
+    ERNIE_API_KEY, ERNIE_BASE_URL, INTERNAL_ERNIE_BASE_URL,
+    INTERNAL_ERNIE_MODEL, RAG_DB_PATH, PDF_OUTPUT_DIR
 )
 from auth import create_token, require_session, revoke_session
 from core.model_registry import init_providers, get_provider, get_default_provider, list_available_providers
@@ -64,6 +65,7 @@ app.register_blueprint(learning_bp)
 def _reload_runtime_config_state() -> dict:
     global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
     global ERNIE_API_KEY, ERNIE_BASE_URL
+    global INTERNAL_ERNIE_BASE_URL, INTERNAL_ERNIE_MODEL
     global BAIDU_APP_KEY, BAIDU_SECRET_KEY
 
     snapshot = app_config.reload_runtime_settings()
@@ -72,6 +74,8 @@ def _reload_runtime_config_state() -> dict:
     DEEPSEEK_BASE_URL = app_config.DEEPSEEK_BASE_URL
     ERNIE_API_KEY = app_config.ERNIE_API_KEY
     ERNIE_BASE_URL = app_config.ERNIE_BASE_URL
+    INTERNAL_ERNIE_BASE_URL = app_config.INTERNAL_ERNIE_BASE_URL
+    INTERNAL_ERNIE_MODEL = app_config.INTERNAL_ERNIE_MODEL
     BAIDU_APP_KEY = app_config.BAIDU_APP_KEY
     BAIDU_SECRET_KEY = app_config.BAIDU_SECRET_KEY
 
@@ -80,6 +84,8 @@ def _reload_runtime_config_state() -> dict:
         deepseek_base_url=DEEPSEEK_BASE_URL,
         ernie_api_key=ERNIE_API_KEY,
         ernie_base_url=ERNIE_BASE_URL,
+        internal_ernie_base_url=INTERNAL_ERNIE_BASE_URL,
+        internal_ernie_model=INTERNAL_ERNIE_MODEL,
     )
     return snapshot
 
@@ -246,6 +252,29 @@ def _extract_resume_payload(file_path: str, *, include_images: bool = False) -> 
         ocr_full_loader=perform_ocr_full if OCR_AVAILABLE else None,
         use_preprocessing=True,
     )
+
+
+def _compact_log_text(value: object, limit: int = 700) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " | ").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _log_resume_extraction_failure(context: str, file_path: str, extraction: dict) -> None:
+    print(
+        "[RESUME][ERROR] "
+        f"{context} extraction failed "
+        f"mode={extraction.get('mode') or 'unknown'} "
+        f"source={extraction.get('source_label') or 'unknown'} "
+        f"file={os.path.basename(str(file_path or '')) or 'unknown'} "
+        f"message={_compact_log_text(extraction.get('error_message'))}"
+    )
+
+
+def _resume_extraction_failure_message(extraction: dict) -> str:
+    message = str(extraction.get("error_message") or "简历内容提取失败，请重新上传。").strip()
+    return f"简历解析失败: {message}"
 
 
 MIN_RESUME_TEXT_LENGTH = 50
@@ -554,6 +583,29 @@ CONTEXT_CHECKPOINT_FIELD_LIMITS = {
     "risk_signals": (6, 140),
     "open_threads": (6, 140),
 }
+
+
+def _model_provider_unavailable_message(provider) -> str:
+    label = getattr(provider, "label", "") or getattr(provider, "key", "") or "所选模型"
+    key = getattr(provider, "key", "")
+    if key == "internal-ernie":
+        return "内测大模型（未开放）未配置或未开放，请先在应用设置的大模型区域填写本地内测地址。"
+    return f"{label} 未配置或不可用，请先在应用设置的大模型区域补全配置。"
+
+
+def _resolve_requested_model_provider(model_provider: str):
+    requested = str(model_provider or "").strip()
+    if not requested:
+        return get_default_provider(), ""
+
+    provider = get_provider(requested)
+    if not provider:
+        return None, f"未知模型 provider：{requested}"
+    if not provider.available:
+        if provider.key != "internal-ernie":
+            return get_default_provider(), ""
+        return None, _model_provider_unavailable_message(provider)
+    return provider, ""
 
 # Per-session 评估观察者
 try:
@@ -2827,6 +2879,9 @@ def setup_interview():
     prepared_resume = None
 
     current_user_id = _get_current_user_id_from_auth_header()
+    selected_provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
 
     if 'resume' in request.files:
         file = request.files['resume']
@@ -2836,7 +2891,8 @@ def setup_interview():
                 filename, file_path = _save_uploaded_resume(file)
                 prepared_resume = _extract_resume_payload(file_path)
                 if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
+                    _log_resume_extraction_failure("interview.setup", file_path, prepared_resume)
+                    message = _resume_extraction_failure_message(prepared_resume)
                     _cleanup_local_resume_file(file_path)
                     return jsonify({"status": "error", "message": message}), 400
             except ResumeOcrUnavailableError as exc:
@@ -2870,7 +2926,7 @@ def setup_interview():
             user_id=current_user_id,
         )
 
-    agent = get_agent(session_id, model_provider=model_provider)
+    agent = get_agent(session_id, model_provider=selected_provider.key if selected_provider else model_provider)
     _register_session_trace_context(
         session_id=session_id,
         user_id=current_user_id,
@@ -3168,6 +3224,9 @@ def setup_interview_stream():
     prepared_resume = None
 
     current_user_id = _get_current_user_id_from_auth_header()
+    selected_provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
 
     if 'resume' in request.files:
         file = request.files['resume']
@@ -3177,7 +3236,8 @@ def setup_interview_stream():
                 filename, file_path = _save_uploaded_resume(file)
                 prepared_resume = _extract_resume_payload(file_path)
                 if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
+                    _log_resume_extraction_failure("interview.setup_stream", file_path, prepared_resume)
+                    message = _resume_extraction_failure_message(prepared_resume)
                     _cleanup_local_resume_file(file_path)
                     return jsonify({"status": "error", "message": message}), 400
             except ResumeOcrUnavailableError as exc:
@@ -3209,7 +3269,7 @@ def setup_interview_stream():
             user_id=current_user_id,
         )
 
-    agent = get_agent(session_id, model_provider=model_provider)
+    agent = get_agent(session_id, model_provider=selected_provider.key if selected_provider else model_provider)
     _register_session_trace_context(
         session_id=session_id,
         user_id=current_user_id,
@@ -4633,6 +4693,7 @@ def analyze_resume_stream():
         data = request.json or {}
         ocr_text = data.get('ocr_text', '')
         job_title = data.get('job_title', '')
+        model_provider = data.get('model_provider', '')
         report_context = _parse_report_context(data.get('report_context'))
         if not ocr_text:
             return jsonify({"status": "error", "message": "ocr_text 不能为空"}), 400
@@ -4644,6 +4705,7 @@ def analyze_resume_stream():
         if file.filename == '':
             return jsonify({"status": "error", "message": "文件名为空"}), 400
         job_title = request.form.get('job_title', '')
+        model_provider = request.form.get('model_provider', '')
         report_context = _parse_report_context(request.form.get('report_context'))
         try:
             _, file_path = _save_uploaded_resume(file)
@@ -4651,7 +4713,8 @@ def analyze_resume_stream():
             ocr_text = extraction["text"] if extraction["success"] else extraction["error_message"]
             ocr_images = extraction["images"]
             if not extraction["success"]:
-                return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
+                _log_resume_extraction_failure("resume.analyze_stream", file_path, extraction)
+                return jsonify({"status": "error", "message": _resume_extraction_failure_message(extraction)}), 400
         except ResumeOcrUnavailableError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 503
         except ResumeExtractionError as exc:
@@ -4660,7 +4723,9 @@ def analyze_resume_stream():
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # 获取模型配置
-    provider = get_default_provider()
+    provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
     _is_json = request.is_json  # 在请求上下文内捕获，generator 内不能访问 request
 
     def generate():
@@ -4721,7 +4786,7 @@ _resume_sessions: dict[str, dict] = {}
 
 @app.route('/api/resume/analyze', methods=['POST'])
 def analyze_resume():
-    """上传简历，提取文本并执行 DeepSeek 分析，返回结构化建议。
+    """上传简历，提取文本并执行模型分析，返回结构化建议。
     支持两种模式：
     1. FormData 上传文件 → 自动提取文本（OCR / 直读）+ 分析
     2. JSON body { ocr_text, job_title } → 跳过文件解析，直接分析（复用面试 OCR 结果）
@@ -4734,14 +4799,19 @@ def analyze_resume():
         data = request.json or {}
         ocr_text = data.get('ocr_text', '')
         job_title = data.get('job_title', '')
+        model_provider = data.get('model_provider', '')
         report_context = _parse_report_context(data.get('report_context'))
         if not ocr_text:
             return jsonify({"status": "error", "message": "ocr_text 不能为空"}), 400
+        provider, model_error = _resolve_requested_model_provider(model_provider)
+        if model_error:
+            return jsonify({"status": "error", "message": model_error}), 400
 
         try:
             analyzer = ResumeAnalyzer(
-                api_key=DEEPSEEK_API_KEY,
-                base_url=DEEPSEEK_BASE_URL
+                api_key=provider.api_key,
+                base_url=provider.base_url,
+                model=provider.model,
             )
             analysis_job_title = _merge_job_title_with_report_context(job_title, report_context)
             result = analyzer.analyze(ocr_text=ocr_text, job_title=analysis_job_title, report_context=report_context)
@@ -4776,7 +4846,11 @@ def analyze_resume():
         return jsonify({"status": "error", "message": "文件名为空"}), 400
 
     job_title = request.form.get('job_title', '')
+    model_provider = request.form.get('model_provider', '')
     report_context = _parse_report_context(request.form.get('report_context'))
+    provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
     try:
         # 1. 提取简历文本（OCR / 直读自动选择）
         _, file_path = _save_uploaded_resume(file)
@@ -4785,12 +4859,14 @@ def analyze_resume():
         ocr_images = extraction["images"]
 
         if not extraction["success"]:
-            return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
+            _log_resume_extraction_failure("resume.analyze", file_path, extraction)
+            return jsonify({"status": "error", "message": _resume_extraction_failure_message(extraction)}), 400
 
-        # 2. DeepSeek 分析
+        # 2. 模型分析
         analyzer = ResumeAnalyzer(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_BASE_URL
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            model=provider.model,
         )
         analysis_job_title = _merge_job_title_with_report_context(job_title, report_context)
         result = analyzer.analyze(ocr_text=ocr_result, job_title=analysis_job_title, report_context=report_context)
@@ -5084,11 +5160,53 @@ def speech_to_text(session_id):
     rate = int(request.form.get('rate', '16000'))
 
     try:
-        text = _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+        text = _speech_to_text_with_chunking(audio_data, fmt=fmt, rate=rate)
         return jsonify({"status": "success", "text": text})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+STT_PCM_CHUNK_SECONDS = 45
+PCM_SAMPLE_WIDTH_BYTES = 2
+
+
+def _split_pcm_audio(audio_data: bytes, *, rate: int, max_seconds: int = STT_PCM_CHUNK_SECONDS) -> list[bytes]:
+    bytes_per_second = max(1, int(rate)) * PCM_SAMPLE_WIDTH_BYTES
+    max_chunk_bytes = max(1, bytes_per_second * max_seconds)
+    max_chunk_bytes -= max_chunk_bytes % PCM_SAMPLE_WIDTH_BYTES
+    if max_chunk_bytes <= 0 or len(audio_data) <= max_chunk_bytes:
+        return [audio_data]
+
+    chunks: list[bytes] = []
+    for start in range(0, len(audio_data), max_chunk_bytes):
+        chunk = audio_data[start:start + max_chunk_bytes]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _speech_to_text_with_chunking(audio_data: bytes, *, fmt: str = "pcm", rate: int = 16000) -> str:
+    normalized_fmt = str(fmt or "pcm").strip().lower()
+    if normalized_fmt != "pcm":
+        return _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+
+    chunks = _split_pcm_audio(audio_data, rate=rate)
+    if len(chunks) <= 1:
+        return _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+
+    print(
+        f"[STT] PCM audio exceeds short-ASR safe size, "
+        f"splitting into {len(chunks)} chunks "
+        f"(total_bytes={len(audio_data)}, rate={rate}, chunk_seconds={STT_PCM_CHUNK_SECONDS})"
+    )
+    texts: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        print(f"[STT] Recognizing chunk {index}/{len(chunks)} bytes={len(chunk)}")
+        text = _speech_client.speech_to_text(chunk, fmt=fmt, rate=rate)
+        if text and text.strip():
+            texts.append(text.strip())
+    return " ".join(texts).strip()
 
 
 @app.route('/api/speech/polish', methods=['POST'])

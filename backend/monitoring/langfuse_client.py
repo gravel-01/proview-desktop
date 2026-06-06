@@ -86,7 +86,8 @@ class LangfuseMonitoringClient:
         )
         payload = _dump_model(response)
         observations = payload.get("data", []) if isinstance(payload, dict) else []
-        return [self._summarize_observation(observation) for observation in observations]
+        summarized = [self._summarize_observation(observation) for observation in observations]
+        return self._backfill_observation_usage_from_trace_details(client, summarized)
 
     def fetch_trace_detail(self, trace_id: str) -> dict[str, Any]:
         client = self._get_client()
@@ -217,6 +218,60 @@ class LangfuseMonitoringClient:
             or observation.get("totalCost"),
         }
 
+    def _backfill_observation_usage_from_trace_details(
+        self,
+        client,
+        observations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        missing_usage_trace_ids = []
+        for observation in observations:
+            if str(observation.get("type") or "").lower() not in {"generation", "llm"}:
+                continue
+            if observation.get("usage"):
+                continue
+            trace_id = observation.get("trace_id")
+            if trace_id and trace_id not in missing_usage_trace_ids:
+                missing_usage_trace_ids.append(trace_id)
+
+        if not missing_usage_trace_ids:
+            return observations
+
+        usage_by_observation_id: dict[str, dict[str, Any]] = {}
+        cost_by_observation_id: dict[str, Any] = {}
+        for trace_id in missing_usage_trace_ids[:25]:
+            try:
+                trace_payload = _dump_model(client.api.trace.get(trace_id))
+            except Exception:
+                continue
+            for raw_observation in trace_payload.get("observations") or []:
+                if not isinstance(raw_observation, dict):
+                    continue
+                observation_id = raw_observation.get("id")
+                if not observation_id:
+                    continue
+                usage = _extract_observation_usage(raw_observation)
+                if usage:
+                    usage_by_observation_id[str(observation_id)] = usage
+                cost = (
+                    raw_observation.get("calculated_total_cost")
+                    or raw_observation.get("calculatedTotalCost")
+                    or raw_observation.get("total_cost")
+                    or raw_observation.get("totalCost")
+                )
+                if cost is not None:
+                    cost_by_observation_id[str(observation_id)] = cost
+
+        if not usage_by_observation_id and not cost_by_observation_id:
+            return observations
+
+        for observation in observations:
+            observation_id = str(observation.get("id") or "")
+            if observation_id in usage_by_observation_id and not observation.get("usage"):
+                observation["usage"] = usage_by_observation_id[observation_id]
+            if observation_id in cost_by_observation_id and observation.get("cost") in (None, ""):
+                observation["cost"] = cost_by_observation_id[observation_id]
+        return observations
+
 
 def _dump_model(value: Any) -> Any:
     if hasattr(value, "model_dump"):
@@ -280,21 +335,29 @@ def _non_empty(value: Any) -> Optional[str]:
 def _extract_observation_usage(observation: dict[str, Any]) -> dict[str, Any]:
     usage = observation.get("usage") or observation.get("usage_details") or observation.get("usageDetails")
     if isinstance(usage, dict) and usage:
-        return usage
+        result = _normalize_usage_mapping(usage)
+        if result:
+            return result
 
     input_tokens = (
         observation.get("inputUsage")
+        or observation.get("input_usage")
         or observation.get("promptTokens")
+        or observation.get("prompt_tokens")
         or observation.get("prompt_tokens")
     )
     output_tokens = (
         observation.get("outputUsage")
+        or observation.get("output_usage")
         or observation.get("completionTokens")
+        or observation.get("completion_tokens")
         or observation.get("completion_tokens")
     )
     total_tokens = (
         observation.get("totalUsage")
+        or observation.get("total_usage")
         or observation.get("totalTokens")
+        or observation.get("total_tokens")
         or observation.get("total_tokens")
     )
     result = {}
@@ -305,6 +368,38 @@ def _extract_observation_usage(observation: dict[str, Any]) -> dict[str, Any]:
     if total_tokens is not None:
         result["total"] = total_tokens
     return result
+
+
+def _normalize_usage_mapping(usage: dict[str, Any]) -> dict[str, Any]:
+    usage = _dump_model(usage)
+    if not isinstance(usage, dict):
+        return {}
+
+    aliases = {
+        "input": ("input", "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
+        "output": ("output", "output_tokens", "outputTokens", "completion_tokens", "completionTokens"),
+        "total": ("total", "total_tokens", "totalTokens"),
+    }
+    result: dict[str, Any] = {}
+    for target, candidates in aliases.items():
+        for key in candidates:
+            value = _extract_usage_value(usage.get(key))
+            if value is not None:
+                result[target] = value
+                break
+    if result:
+        return result
+    return usage
+
+
+def _extract_usage_value(value: Any) -> Any:
+    value = _dump_model(value)
+    if isinstance(value, dict):
+        for key in ("tokens", "total", "value", "count"):
+            if value.get(key) is not None:
+                return value.get(key)
+        return None
+    return value
 
 
 def _extract_tool_names(output: Any) -> list[str]:

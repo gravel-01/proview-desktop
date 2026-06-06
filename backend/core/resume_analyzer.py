@@ -43,10 +43,12 @@ class ResumeAnalyzer:
             raw = ""
             if use_reasoning:
                 for chunk_type, chunk in self.client.generate_stream_with_reasoning(messages):
+                    self._raise_if_llm_error(chunk)
                     if chunk_type == "content":
                         raw += chunk
             else:
                 for chunk in self.client.generate_stream(messages):
+                    self._raise_if_llm_error(chunk)
                     raw += chunk
             return raw
 
@@ -54,12 +56,14 @@ class ResumeAnalyzer:
             """流式调用，区分思维链和正文"""
             if use_reasoning:
                 for chunk_type, chunk in self.client.generate_stream_with_reasoning(messages):
+                    self._raise_if_llm_error(chunk)
                     if chunk_type == "thinking":
                         yield ("thinking", chunk)
                     else:
                         yield ("content", chunk)
             else:
                 for chunk in self.client.generate_stream(messages):
+                    self._raise_if_llm_error(chunk)
                     yield ("thinking", chunk)
 
         # ── 第一步：结构化提取（串行，后续步骤依赖结果） ──
@@ -88,6 +92,7 @@ class ResumeAnalyzer:
                     suggestions_result["raw"] = _collect_llm(msgs)
             except Exception as e:
                 print(f"[ResumeAnalyzer] suggestions thread error: {e}")
+                suggestions_result["error"] = str(e)
             suggestions_result["done"] = True
             thinking_q.put(None)  # 通知主线程
 
@@ -97,6 +102,7 @@ class ResumeAnalyzer:
                 builder_result["raw"] = _collect_llm(msgs)
             except Exception as e:
                 print(f"[ResumeAnalyzer] builder thread error: {e}")
+                builder_result["error"] = str(e)
             builder_result["done"] = True
             thinking_q.put(None)  # 通知主线程
 
@@ -114,6 +120,10 @@ class ResumeAnalyzer:
 
         t1.join(timeout=5)
         t2.join(timeout=5)
+
+        thread_errors = [item.get("error") for item in (suggestions_result, builder_result) if item.get("error")]
+        if thread_errors:
+            raise RuntimeError("; ".join(thread_errors))
 
         suggestions = self._parse_json_array(suggestions_result["raw"], fallback_id_prefix="sug") if suggestions_result["raw"] else []
         builder_data = self._parse_json_object(builder_result["raw"]) if builder_result["raw"] else {}
@@ -319,6 +329,7 @@ OCR 原文片段：
             {"role": "user", "content": prompt}
         ]
         raw = self.client.generate(messages)
+        self._raise_if_llm_error(raw)
         return self._parse_json_array(raw, fallback_id_prefix="sec")
 
     def _generate_suggestions(self, sections: list, job_title: str = "", report_context: Optional[dict] = None) -> list:
@@ -366,6 +377,7 @@ OCR 原文片段：
             {"role": "user", "content": prompt}
         ]
         raw = self.client.generate(messages)
+        self._raise_if_llm_error(raw)
         return self._parse_json_array(raw, fallback_id_prefix="sug")
 
     def _extract_builder_data(self, ocr_text: str) -> dict:
@@ -394,11 +406,29 @@ OCR 原文片段：
             {"role": "user", "content": user_prompt_with_template}
         ]
         raw = self.client.generate(messages)
+        self._raise_if_llm_error(raw)
         data = self._parse_json_object(raw)
 
         # 校验并补全数据
         data = self._validate_builder_data(data)
         return data
+
+    @staticmethod
+    def _raise_if_llm_error(raw: object) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+
+        detail = ""
+        if text.startswith("[错误:"):
+            detail = text[len("[错误:"):].strip()
+            if detail.endswith("]"):
+                detail = detail[:-1].strip()
+        elif text.startswith("错误:"):
+            detail = text[len("错误:"):].strip()
+
+        if detail:
+            raise RuntimeError(f"LLM 调用失败: {detail}")
 
     @staticmethod
     def _parse_json_object(raw: str) -> dict:

@@ -52,10 +52,13 @@ function getBackendSpawnConfig() {
     }
   }
 
+  const backendDir = path.join(process.resourcesPath, 'backend', 'proview-backend')
+  const backendExecutable = process.platform === 'win32' ? 'proview-backend.exe' : 'proview-backend'
+
   return {
-    command: path.join(process.resourcesPath, 'backend', 'proview-backend', 'proview-backend.exe'),
+    command: path.join(backendDir, backendExecutable),
     args: [],
-    cwd: path.join(process.resourcesPath, 'backend', 'proview-backend'),
+    cwd: backendDir,
   }
 }
 
@@ -95,20 +98,33 @@ function ensureRuntimeEnvFile() {
 function buildBackendEnv() {
   const backendDataDir = path.join(app.getPath('userData'), 'backend-data')
   const runtimeEnvFilePath = ensureRuntimeEnvFile()
-  return {
+  const env = {
     ...process.env,
     PROVIEW_API_HOST: API_HOST,
     PROVIEW_API_PORT: String(API_PORT),
     PROVIEW_DESKTOP_MODE: '1',
     PYTHONIOENCODING: process.env.PYTHONIOENCODING || 'utf-8',
     PYTHONUTF8: process.env.PYTHONUTF8 || '1',
-    PROVIEW_PLAYWRIGHT_CHANNEL: process.env.PROVIEW_PLAYWRIGHT_CHANNEL || 'msedge',
     PROVIEW_APP_DATA_DIR: backendDataDir,
     PROVIEW_ENV_FILE: runtimeEnvFilePath,
     PROVIEW_SQLITE_DB_PATH: 'data/interviews.db',
     PROVIEW_CAREER_DB_PATH: 'data/career_planning.sqlite3',
     PROVIEW_SESSION_TOKEN_DB_PATH: 'data/session_tokens.sqlite3',
   }
+
+  if (process.env.PROVIEW_PLAYWRIGHT_CHANNEL) {
+    env.PROVIEW_PLAYWRIGHT_CHANNEL = process.env.PROVIEW_PLAYWRIGHT_CHANNEL
+  } else if (process.platform === 'win32') {
+    env.PROVIEW_PLAYWRIGHT_CHANNEL = 'msedge'
+  }
+
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+    env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH
+  } else if (app.isPackaged && process.platform === 'darwin') {
+    env.PLAYWRIGHT_BROWSERS_PATH = '0'
+  }
+
+  return env
 }
 
 function startBackend() {

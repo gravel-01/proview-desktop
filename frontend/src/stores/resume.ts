@@ -112,7 +112,7 @@ export const useResumeStore = defineStore('resume', () => {
     reportContext.value.questionnaireContext = nextQuestionnaire
   }
 
-  async function analyzeResume(file: File, jobTitle: string) {
+  async function analyzeResume(file: File, jobTitle: string, modelProvider = '') {
     try {
       assertValidResumeFile(file)
     } catch (e: any) {
@@ -153,7 +153,7 @@ export const useResumeStore = defineStore('resume', () => {
           thinkingStage.value = ''
           phase.value = 'upload'
         },
-      }, reportContext.value)
+      }, reportContext.value, modelProvider)
     } catch (e: any) {
       error.value = e?.message || '分析失败'
       thinkingText.value = ''
@@ -163,7 +163,7 @@ export const useResumeStore = defineStore('resume', () => {
   }
 
   /** 使用已有 OCR 文本直接分析（跳过 OCR，复用面试结果） */
-  async function analyzeFromOcr(ocrTextInput: string, jobTitle: string) {
+  async function analyzeFromOcr(ocrTextInput: string, jobTitle: string, modelProvider = '') {
     phase.value = 'analyzing'
     skipOcr.value = true
     error.value = ''
@@ -196,7 +196,7 @@ export const useResumeStore = defineStore('resume', () => {
           thinkingStage.value = ''
           phase.value = 'upload'
         },
-      }, reportContext.value)
+      }, reportContext.value, modelProvider)
     } catch (e: any) {
       error.value = e?.message || '分析失败'
       thinkingText.value = ''

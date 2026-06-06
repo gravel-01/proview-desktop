@@ -75,6 +75,23 @@ function applyReportContext(detail: SessionDetail) {
   return true
 }
 
+function sessionTime(session: { end_time?: string | null; start_time?: string | null }) {
+  const value = session.end_time || session.start_time || ''
+  const timestamp = value ? Date.parse(value) : 0
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function uniqueSessionIds(sessionIds: Array<string | null | undefined>) {
+  const seen = new Set<string>()
+  return sessionIds
+    .map((sessionId) => String(sessionId || '').trim())
+    .filter((sessionId) => {
+      if (!sessionId || seen.has(sessionId)) return false
+      seen.add(sessionId)
+      return true
+    })
+}
+
 async function loadReportContextForSession(sessionId: string) {
   reportContextLabel.value = ''
   store.setReportContext(null)
@@ -91,30 +108,48 @@ async function loadReportContextForSession(sessionId: string) {
   }
 }
 
-async function loadLatestReportContext() {
+async function loadReportContextFromCandidates(sessionIds: Array<string | null | undefined>) {
+  for (const sessionId of uniqueSessionIds(sessionIds)) {
+    if (await loadReportContextForSession(sessionId)) {
+      return true
+    }
+  }
+  return false
+}
+
+async function loadLatestReportContext(fallbackSessionId = '') {
   reportContextLabel.value = ''
   store.setReportContext(null)
 
+  const currentReportSessionIds = uniqueSessionIds([
+    interviewStore.lastSavedSessionId,
+    interviewStore.interviewStatus === 'ended' ? interviewStore.currentSessionId : '',
+  ])
+
+  if (await loadReportContextFromCandidates(currentReportSessionIds)) {
+    return true
+  }
+
   try {
     const sessions = await fetchSessionHistory()
-    const completed = sessions.find((session) => session.status === 'completed')
-    if (!completed) return
+    const completed = [...sessions]
+      .filter((session) => session.status === 'completed')
+      .sort((a, b) => sessionTime(b) - sessionTime(a))
 
-    await loadReportContextForSession(completed.session_id)
+    const historySessionIds = completed.map((session) => session.session_id)
+    if (await loadReportContextFromCandidates([...historySessionIds, fallbackSessionId])) {
+      return true
+    }
   } catch {
     reportContextLabel.value = ''
     store.setReportContext(null)
   }
+
+  return loadReportContextFromCandidates([fallbackSessionId])
 }
 
 async function loadExistingResumeReportContext() {
-  if (!existingResumeSessionId.value) {
-    reportContextLabel.value = ''
-    store.setReportContext(null)
-    return
-  }
-
-  await loadReportContextForSession(existingResumeSessionId.value)
+  await loadLatestReportContext(existingResumeSessionId.value)
 }
 
 onMounted(async () => {
@@ -122,12 +157,7 @@ onMounted(async () => {
   if (isReusableOcrText(localOcr)) {
     existingOcrText.value = localOcr
     existingResumeName.value = interviewStore.config.resumeFileName || '面试中的简历'
-    existingResumeSessionId.value = (
-      interviewStore.config.resumeSourceSessionId
-      || interviewStore.lastSavedSessionId
-      || interviewStore.currentSessionId
-      || ''
-    )
+    existingResumeSessionId.value = interviewStore.config.resumeSourceSessionId || ''
     jobTitle.value = interviewStore.config.jobTitle || ''
     await loadExistingResumeReportContext()
     loadingExisting.value = false
@@ -225,13 +255,14 @@ function syncQuestionnaireContext() {
 function startAnalyze() {
   syncQuestionnaireContext()
   const finalJobTitle = jobTitle.value.trim() || questionnaireStore.formData.targetRole.trim()
+  const modelProvider = interviewStore.config.modelProvider
 
   if (mode.value === 'existing' && existingOcrText.value) {
-    store.analyzeFromOcr(existingOcrText.value, finalJobTitle)
+    store.analyzeFromOcr(existingOcrText.value, finalJobTitle, modelProvider)
   } else if (mode.value === 'upload' && file.value) {
-    store.analyzeResume(file.value, finalJobTitle)
+    store.analyzeResume(file.value, finalJobTitle, modelProvider)
   } else if (file.value) {
-    store.analyzeResume(file.value, finalJobTitle)
+    store.analyzeResume(file.value, finalJobTitle, modelProvider)
   }
 }
 

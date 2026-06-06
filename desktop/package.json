@@ -7,8 +7,11 @@
   "scripts": {
     "build:frontend": "powershell -ExecutionPolicy Bypass -File .\\scripts\\build-frontend.ps1",
     "build:backend": "powershell -ExecutionPolicy Bypass -File .\\scripts\\build-backend.ps1",
+    "build:frontend:mac": "bash ./scripts/build-frontend.sh",
+    "build:backend:mac": "bash ./scripts/build-backend-macos.sh",
     "pack": "npm run build:frontend && npm run build:backend && powershell -ExecutionPolicy Bypass -File .\\scripts\\package-app.ps1 --dir",
-    "dist": "npm run build:frontend && npm run build:backend && powershell -ExecutionPolicy Bypass -File .\\scripts\\package-app.ps1 --win nsis portable"
+    "dist": "npm run build:frontend && npm run build:backend && powershell -ExecutionPolicy Bypass -File .\\scripts\\package-app.ps1 --win nsis portable",
+    "dist:mac": "npm run build:frontend:mac && npm run build:backend:mac && bash ./scripts/package-app-macos.sh"
   },
   "devDependencies": {
     "electron": "^37.2.6",
@@ -60,6 +63,14 @@
           ]
         }
       ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "${productName}-Mac-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

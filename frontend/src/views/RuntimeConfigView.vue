@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
+  Activity,
   ArrowLeft,
   AudioLines,
   Bot,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import {
+  buildApiUrl,
   describeRuntimeApiBaseUrl,
   fetchRuntimeConfig,
   getRuntimeApiBaseUrl,
@@ -36,10 +38,16 @@ type RuntimeFormKey =
   | 'DEEPSEEK_API_KEY'
   | 'ERNIE_BASE_URL'
   | 'ERNIE_API_KEY'
+  | 'INTERNAL_ERNIE_BASE_URL'
+  | 'INTERNAL_ERNIE_MODEL'
   | 'PADDLEOCR_API_URL'
   | 'PADDLE_OCR_TOKEN'
   | 'BAIDU_APP_KEY'
   | 'BAIDU_SECRET_KEY'
+  | 'PROVIEW_MONITORING_ENABLED'
+  | 'LANGFUSE_BASE_URL'
+  | 'LANGFUSE_PUBLIC_KEY'
+  | 'LANGFUSE_SECRET_KEY'
 
 type SecretFieldKey =
   | 'PADDLEOCR_API_URL'
@@ -48,6 +56,8 @@ type SecretFieldKey =
   | 'PADDLE_OCR_TOKEN'
   | 'BAIDU_APP_KEY'
   | 'BAIDU_SECRET_KEY'
+  | 'LANGFUSE_PUBLIC_KEY'
+  | 'LANGFUSE_SECRET_KEY'
 
 interface FieldMeta {
   key: RuntimeFormKey
@@ -60,8 +70,8 @@ interface GuideStep {
   id: string
   title: string
   caption: string
-  image: string
-  alt: string
+  image?: string
+  alt?: string
   fields?: string[]
 }
 
@@ -80,9 +90,11 @@ interface GuidePanel {
   }
 }
 
-type SettingsPanelId = 'identity' | 'models' | 'ocr' | 'speech'
+type SettingsPanelId = 'identity' | 'models' | 'ocr' | 'speech' | 'observability'
+const settingsPanelIds: SettingsPanelId[] = ['identity', 'models', 'ocr', 'speech', 'observability']
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
 const loading = ref(true)
@@ -92,6 +104,9 @@ const error = ref('')
 const success = ref('')
 const probeMessage = ref('')
 const probeStatus = ref<'idle' | 'success' | 'error'>('idle')
+const langfuseTesting = ref(false)
+const langfuseProbeMessage = ref('')
+const langfuseProbeStatus = ref<'idle' | 'success' | 'error'>('idle')
 const settingsNotesOpen = ref(false)
 const guideDialogOpen = ref(false)
 const guideImageViewerOpen = ref(false)
@@ -110,6 +125,7 @@ const guideStepIndex = reactive<Record<SettingsPanelId, number>>({
   models: 0,
   ocr: 0,
   speech: 0,
+  observability: 0,
 })
 
 const form = reactive<Record<RuntimeFormKey, string>>({
@@ -119,10 +135,16 @@ const form = reactive<Record<RuntimeFormKey, string>>({
   DEEPSEEK_API_KEY: '',
   ERNIE_BASE_URL: '',
   ERNIE_API_KEY: '',
+  INTERNAL_ERNIE_BASE_URL: '',
+  INTERNAL_ERNIE_MODEL: 'ERNIE-4.5-21B-A3B',
   PADDLEOCR_API_URL: '',
   PADDLE_OCR_TOKEN: '',
   BAIDU_APP_KEY: '',
   BAIDU_SECRET_KEY: '',
+  PROVIEW_MONITORING_ENABLED: '1',
+  LANGFUSE_BASE_URL: 'https://cloud.langfuse.com',
+  LANGFUSE_PUBLIC_KEY: '',
+  LANGFUSE_SECRET_KEY: '',
 })
 
 const configured = reactive<Record<string, boolean>>({})
@@ -134,6 +156,8 @@ const clearSecretFlags = reactive<Record<SecretFieldKey, boolean>>({
   PADDLE_OCR_TOKEN: false,
   BAIDU_APP_KEY: false,
   BAIDU_SECRET_KEY: false,
+  LANGFUSE_PUBLIC_KEY: false,
+  LANGFUSE_SECRET_KEY: false,
 })
 
 const profileFields: FieldMeta[] = [
@@ -163,6 +187,24 @@ const networkFields: FieldMeta[] = [
     label: '文心 API_URL',
     placeholder: 'https://aistudio.baidu.com/llm/lmapi/v3',
     description: '百度文心模型调用地址。',
+  },
+  {
+    key: 'INTERNAL_ERNIE_BASE_URL',
+    label: '内测大模型（未开放）API_URL',
+    placeholder: '仅本地内测用户填写，普通用户留空',
+    description: '仅限已获得内测地址的本地用户使用；留空时该入口会显示未配置。',
+  },
+  {
+    key: 'INTERNAL_ERNIE_MODEL',
+    label: '内测大模型（未开放）模型名',
+    placeholder: 'ERNIE-4.5-21B-A3B',
+    description: '内测服务使用的模型 ID，通常保持默认值。',
+  },
+  {
+    key: 'LANGFUSE_BASE_URL',
+    label: 'Langfuse Base URL',
+    placeholder: 'https://cloud.langfuse.com',
+    description: 'Langfuse Cloud 或自托管实例地址。',
   },
 ]
 
@@ -203,20 +245,53 @@ const secretFields: Array<FieldMeta & { key: SecretFieldKey }> = [
     placeholder: '留空表示保持现有值',
     description: '与 App Key 配套使用。',
   },
+  {
+    key: 'LANGFUSE_PUBLIC_KEY',
+    label: 'Langfuse Public Key',
+    placeholder: '留空表示保持现有值',
+    description: '用于识别 Langfuse 项目，和 Secret Key 配套使用。',
+  },
+  {
+    key: 'LANGFUSE_SECRET_KEY',
+    label: 'Langfuse Secret Key',
+    placeholder: '留空表示保持现有值',
+    description: '用于写入 trace 与查询运行监控数据。',
+  },
 ]
 
 const currentApiBaseLabel = computed(() => describeRuntimeApiBaseUrl(form.apiBaseUrl))
 const activeBackendLabel = computed(() => describeRuntimeApiBaseUrl(activeBackendBase.value))
-const activePanel = ref<SettingsPanelId>('identity')
+const requestedPanel = String(route.query.panel || '')
+const activePanel = ref<SettingsPanelId>(
+  settingsPanelIds.includes(requestedPanel as SettingsPanelId)
+    ? requestedPanel as SettingsPanelId
+    : 'identity',
+)
 const availableModelCount = computed(() => models.value.filter(model => model.available).length)
 const configuredSecretCount = computed(() => secretFields.filter(field => configured[field.key]).length)
 const ocrConfigured = computed(() => !!(configured.PADDLEOCR_API_URL || configured.PADDLE_OCR_TOKEN))
 const speechConfigured = computed(() => speechAvailable.value || !!(configured.BAIDU_APP_KEY || configured.BAIDU_SECRET_KEY))
+const langfuseEnabled = computed(() => form.PROVIEW_MONITORING_ENABLED !== '0')
+const langfuseConfigured = computed(() => !!(
+  configured.LANGFUSE_BASE_URL &&
+  configured.LANGFUSE_PUBLIC_KEY &&
+  configured.LANGFUSE_SECRET_KEY
+))
+const langfuseIndicator = computed(() => {
+  if (!langfuseEnabled.value) return '已关闭'
+  if (langfuseProbeStatus.value === 'success') return '已连接'
+  if (langfuseProbeStatus.value === 'error') return '连接异常'
+  return langfuseConfigured.value ? '待验证' : '可选配置'
+})
 const identityFields = computed(() => profileFields)
 const connectionFields = computed(() => networkFields.filter(field => field.key === 'apiBaseUrl'))
 const modelNetworkFields = computed(() => networkFields.filter(field => (
-  field.key === 'DEEPSEEK_BASE_URL' || field.key === 'ERNIE_BASE_URL'
+  field.key === 'DEEPSEEK_BASE_URL'
+  || field.key === 'ERNIE_BASE_URL'
+  || field.key === 'INTERNAL_ERNIE_BASE_URL'
+  || field.key === 'INTERNAL_ERNIE_MODEL'
 )))
+const langfuseNetworkFields = computed(() => networkFields.filter(field => field.key === 'LANGFUSE_BASE_URL'))
 const modelSecretFields = computed(() => secretFields.filter(field => (
   field.key === 'DEEPSEEK_API_KEY' || field.key === 'ERNIE_API_KEY'
 )))
@@ -225,6 +300,9 @@ const ocrSecretFields = computed(() => secretFields.filter(field => (
 )))
 const speechSecretFields = computed(() => secretFields.filter(field => (
   field.key === 'BAIDU_APP_KEY' || field.key === 'BAIDU_SECRET_KEY'
+)))
+const langfuseSecretFields = computed(() => secretFields.filter(field => (
+  field.key === 'LANGFUSE_PUBLIC_KEY' || field.key === 'LANGFUSE_SECRET_KEY'
 )))
 const settingsPanels = computed(() => [
   {
@@ -238,7 +316,7 @@ const settingsPanels = computed(() => [
     id: 'models' as const,
     eyebrow: 'LLM 接入',
     title: '模型服务',
-    description: '集中配置 DeepSeek 与文心的网关地址、密钥和模型接入入口。',
+    description: '集中配置 DeepSeek、文心和内测模型的网关地址、密钥和模型接入入口。',
     indicator: `${availableModelCount.value} / ${models.value.length || 0} 模型可用`,
   },
   {
@@ -254,6 +332,13 @@ const settingsPanels = computed(() => [
     title: '语音配置',
     description: '单独维护百度语音 App Key 与 Secret Key，让语音能力成为一张独立配置卡。',
     indicator: speechConfigured.value ? '语音已配置' : '语音待配置',
+  },
+  {
+    id: 'observability' as const,
+    eyebrow: '可选观测',
+    title: '运行观测',
+    description: '接入 Langfuse，记录 Trace、模型耗时、Token 成本和 Agent 失败链路。',
+    indicator: langfuseIndicator.value,
   },
 ])
 
@@ -306,8 +391,8 @@ const settingsGuideMap: Record<SettingsPanelId, GuidePanel> = {
   },
   models: {
     eyebrow: '模型接入',
-    title: '文心跟图走，DeepSeek 用默认网关',
-    summary: '模型服务卡片内直接展示文心获取 API 的操作链路；DeepSeek 没有仓库截图，所以用默认地址和字段映射提示补足。',
+    title: '文心跟图走，内测入口留空',
+    summary: '模型服务卡片内直接展示文心获取 API 的操作链路；内测大模型只给已获得本地地址的用户填写，普通用户保持为空。',
     steps: [
       {
         id: 'ernie-entry',
@@ -337,6 +422,7 @@ const settingsGuideMap: Record<SettingsPanelId, GuidePanel> = {
     tips: [
       '文心字段对应 `ERNIE_BASE_URL` 和 `ERNIE_API_KEY`。',
       'DeepSeek 默认网关通常直接填 `https://api.deepseek.com/v1`。',
+      '内测大模型字段对应 `INTERNAL_ERNIE_BASE_URL` 和 `INTERNAL_ERNIE_MODEL`；Base URL 留空时不会启用。',
       '密钥输入框留空不会覆盖旧值，只有填写新值或勾选清空才会更新。',
     ],
     secondaryCard: {
@@ -401,6 +487,36 @@ const settingsGuideMap: Record<SettingsPanelId, GuidePanel> = {
       '留空不覆盖原值，勾选清空后才会真正删除语音密钥。',
     ],
   },
+  observability: {
+    eyebrow: '运行观测',
+    title: 'Langfuse 接入说明',
+    summary: 'Langfuse 是可选观测能力，不影响面试启动。保存后可在运行监控页查看 trace、模型耗时、Token 成本和 Agent 失败链路。',
+    steps: [
+      {
+        id: 'langfuse-project',
+        title: '创建或进入 Langfuse 项目',
+        caption: '在 Langfuse Cloud 或自托管实例中进入项目设置，准备复制项目的 Public Key 与 Secret Key。',
+        fields: ['LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'],
+      },
+      {
+        id: 'langfuse-fields',
+        title: '填写运行观测字段',
+        caption: '把实例地址填到 Base URL，Public Key 和 Secret Key 填入密钥区；保持开关启用后保存配置。',
+        fields: ['LANGFUSE_BASE_URL', 'PROVIEW_MONITORING_ENABLED'],
+      },
+      {
+        id: 'langfuse-verify',
+        title: '测试连接并进入运行监控',
+        caption: '保存后先点击测试连接；通过后进入运行监控页查看真实的 trace、模型和工具链路数据。',
+        fields: ['测试连接', '运行监控'],
+      },
+    ],
+    tips: [
+      'Langfuse 是可选能力，未配置时不会阻塞模型、OCR、语音或面试流程。',
+      '`PROVIEW_MONITORING_ENABLED=0` 会关闭监控查询与 LangChain trace callback。',
+      'Secret Key 只保存在后端运行时 `.env`，不会回显到前端。',
+    ],
+  },
 }
 
 const settingsNotes = [
@@ -430,6 +546,7 @@ const runtimeOverviewItems = computed(() => [
   { label: '环境文件', value: envFilePath.value || '未读取到' },
   { label: '后端配置', value: backendConfigLoaded.value ? '已加载后端配置' : '当前未连通后端' },
   { label: '已配置密钥', value: String(configuredSecretCount.value) },
+  { label: '运行观测', value: langfuseIndicator.value },
 ])
 
 function setGuideStep(panel: SettingsPanelId, index: number) {
@@ -469,6 +586,10 @@ function goBack() {
   router.push('/')
 }
 
+function goMonitoring() {
+  router.push('/monitoring')
+}
+
 function applySnapshot(snapshot: RuntimeConfigResponse) {
   envFilePath.value = snapshot.env_file_path || ''
   speechAvailable.value = !!snapshot.speech_available
@@ -476,6 +597,9 @@ function applySnapshot(snapshot: RuntimeConfigResponse) {
   form.LOCAL_USER_NAME = snapshot.fields?.LOCAL_USER_NAME?.value || '本地用户'
   configured.LOCAL_USER_NAME = !!snapshot.fields?.LOCAL_USER_NAME?.configured
   displayValues.LOCAL_USER_NAME = snapshot.fields?.LOCAL_USER_NAME?.display_value || form.LOCAL_USER_NAME
+  form.PROVIEW_MONITORING_ENABLED = snapshot.fields?.PROVIEW_MONITORING_ENABLED?.value || '1'
+  configured.PROVIEW_MONITORING_ENABLED = !!snapshot.fields?.PROVIEW_MONITORING_ENABLED?.configured
+  displayValues.PROVIEW_MONITORING_ENABLED = snapshot.fields?.PROVIEW_MONITORING_ENABLED?.display_value || form.PROVIEW_MONITORING_ENABLED
 
   for (const field of networkFields) {
     if (field.key === 'apiBaseUrl') {
@@ -529,6 +653,40 @@ async function handleProbeApi() {
   }
 }
 
+async function handleTestLangfuseConnection() {
+  langfuseTesting.value = true
+  langfuseProbeMessage.value = ''
+  langfuseProbeStatus.value = 'idle'
+
+  if (!backendConfigLoaded.value) {
+    langfuseProbeStatus.value = 'error'
+    langfuseProbeMessage.value = '当前后端未连通，无法测试 Langfuse。'
+    langfuseTesting.value = false
+    return
+  }
+
+  try {
+    const response = await fetch(buildApiUrl('/api/monitoring/traces/recent?hours=1&limit=1', activeBackendBase.value), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    })
+    const text = await response.text()
+    const data = text ? JSON.parse(text) as Record<string, unknown> : {}
+    if (!response.ok || data.available === false) {
+      throw new Error(typeof data.message === 'string' && data.message ? data.message : `HTTP ${response.status}`)
+    }
+    langfuseProbeStatus.value = 'success'
+    langfuseProbeMessage.value = 'Langfuse 连接正常，可以进入运行监控查看 Trace。'
+  } catch (err) {
+    langfuseProbeStatus.value = 'error'
+    langfuseProbeMessage.value = err instanceof Error ? err.message : 'Langfuse 连接测试失败'
+  } finally {
+    langfuseTesting.value = false
+  }
+}
+
 async function handleSave() {
   saving.value = true
   error.value = ''
@@ -551,6 +709,10 @@ async function handleSave() {
       LOCAL_USER_NAME: form.LOCAL_USER_NAME.trim(),
       DEEPSEEK_BASE_URL: form.DEEPSEEK_BASE_URL.trim(),
       ERNIE_BASE_URL: form.ERNIE_BASE_URL.trim(),
+      INTERNAL_ERNIE_BASE_URL: form.INTERNAL_ERNIE_BASE_URL.trim(),
+      INTERNAL_ERNIE_MODEL: form.INTERNAL_ERNIE_MODEL.trim(),
+      PROVIEW_MONITORING_ENABLED: form.PROVIEW_MONITORING_ENABLED === '0' ? '0' : '1',
+      LANGFUSE_BASE_URL: form.LANGFUSE_BASE_URL.trim(),
     }
 
     for (const field of secretFields) {
@@ -640,7 +802,7 @@ onMounted(() => {
             <div>
               <p class="settings-section-eyebrow">运行状态</p>
               <h3>运行状态工作台</h3>
-              <p>先看当前运行状态，再进入下面的配置编辑台。这里压成两个组件：左侧是更大的运行概览，右侧是压缩后的模型、OCR 与语音能力状态。</p>
+              <p>先看当前运行状态，再进入下面的配置编辑台。这里压成两个组件：左侧是更大的运行概览，右侧是压缩后的模型、OCR、语音与 Langfuse 状态。</p>
             </div>
             <div class="settings-runtime-hub__actions">
               <span class="settings-inline-badge">
@@ -677,7 +839,7 @@ onMounted(() => {
                   <div>
                     <p class="settings-section-eyebrow">能力状态</p>
                     <h4>能力状态</h4>
-                    <p>把大模型情况、OCR 状态和语音状态压缩进一个更窄的状态卡里，方便填写后快速确认接入是否生效。</p>
+                    <p>把大模型、OCR、语音和 Langfuse 状态压缩进一个更窄的状态卡里，方便填写后快速确认接入是否生效。</p>
                   </div>
                 </div>
 
@@ -694,6 +856,10 @@ onMounted(() => {
                     <article class="settings-runtime-status__tile">
                       <span class="settings-metric__label">语音</span>
                       <strong class="settings-metric__value">{{ speechConfigured ? '已配置' : '待配置' }}</strong>
+                    </article>
+                    <article class="settings-runtime-status__tile">
+                      <span class="settings-metric__label">Langfuse</span>
+                      <strong class="settings-metric__value">{{ langfuseIndicator }}</strong>
                     </article>
                   </div>
                 </div>
@@ -855,7 +1021,7 @@ onMounted(() => {
               <template v-else-if="activePanel === 'models'">
                 <article class="settings-config-card">
                   <div class="settings-config-card__summary">
-                    <p class="settings-config-card__note">模型服务卡把网关地址和密钥放在同一张步骤卡里，填写顺序建议先地址后密钥。DeepSeek 和文心仍然沿用当前保存逻辑。</p>
+                    <p class="settings-config-card__note">模型服务卡把网关地址、内测模型名和密钥放在同一张步骤卡里。内测大模型仅在本地填写地址后可用，DeepSeek 和文心仍然沿用当前保存逻辑。</p>
                     <span class="settings-inline-badge">{{ availableModelCount }} / {{ models.length || 0 }} 模型可用</span>
                   </div>
                   <div class="settings-config-card__grid settings-config-card__grid--two">
@@ -866,8 +1032,8 @@ onMounted(() => {
                         </div>
                         <div>
                           <p class="settings-form-card__eyebrow">模型网关</p>
-                          <h4 class="settings-form-card__title">模型网关地址</h4>
-                          <p class="settings-form-card__desc">先把 DeepSeek 和文心的请求入口确定下来，再填写对应密钥。</p>
+                          <h4 class="settings-form-card__title">模型网关与模型名</h4>
+                          <p class="settings-form-card__desc">先把 DeepSeek、文心和内测入口的请求地址确定下来；内测入口没有密钥，地址为空时不可用。</p>
                         </div>
                       </div>
                       <div class="space-y-4">
@@ -962,7 +1128,7 @@ onMounted(() => {
                 </article>
               </template>
 
-              <template v-else>
+              <template v-else-if="activePanel === 'speech'">
                 <article class="settings-config-card">
                   <div class="settings-config-card__summary">
                     <p class="settings-config-card__note">语音配置也拆成独立卡片，只保留百度语音的两个关键字段。填写方式更接近面试配置抽屉里的步骤卡，但不直接照搬样式。</p>
@@ -1000,6 +1166,107 @@ onMounted(() => {
                       </div>
                     </div>
                   </section>
+                </article>
+              </template>
+
+              <template v-else-if="activePanel === 'observability'">
+                <article class="settings-config-card">
+                  <div class="settings-config-card__summary">
+                    <p class="settings-config-card__note">Langfuse 是可选运行观测，不影响面试主流程。保存后可以测试连接，再到运行监控页查看 Trace、模型耗时、Token 成本和 Agent 失败链路。</p>
+                    <span
+                      class="settings-inline-badge"
+                      :class="langfuseProbeStatus === 'success' ? 'settings-inline-badge--success' : ''"
+                    >
+                      {{ langfuseIndicator }}
+                    </span>
+                  </div>
+                  <div class="settings-config-card__grid settings-config-card__grid--two">
+                    <section class="settings-config-card__block">
+                      <div class="settings-form-card__head">
+                        <div class="settings-form-card__icon">
+                          <Activity class="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p class="settings-form-card__eyebrow">观测开关</p>
+                          <h4 class="settings-form-card__title">Langfuse 运行观测</h4>
+                          <p class="settings-form-card__desc">控制运行追踪是否启用，并配置 Langfuse Cloud 或自托管实例地址。</p>
+                        </div>
+                      </div>
+                      <div class="space-y-4">
+                        <label class="settings-switch-row">
+                          <span>
+                            <strong>启用运行追踪</strong>
+                            <small>关闭后不写入 Langfuse，也不再把监控状态视为异常。</small>
+                          </span>
+                          <input
+                            type="checkbox"
+                            class="settings-toggle__input"
+                            :checked="langfuseEnabled"
+                            @change="form.PROVIEW_MONITORING_ENABLED = ($event.target as HTMLInputElement).checked ? '1' : '0'"
+                          />
+                        </label>
+                        <div v-for="field in langfuseNetworkFields" :key="field.key">
+                          <label :for="field.key" class="settings-label">{{ field.label }}</label>
+                          <p class="settings-helper">{{ field.description }}</p>
+                          <input
+                            :id="field.key"
+                            v-model="form[field.key]"
+                            type="text"
+                            class="settings-input"
+                            :placeholder="field.placeholder"
+                          />
+                        </div>
+                        <div class="settings-observability-actions">
+                          <button type="button" class="settings-secondary-btn" :disabled="langfuseTesting" @click="handleTestLangfuseConnection">
+                            {{ langfuseTesting ? '测试中...' : '测试连接' }}
+                          </button>
+                          <button type="button" class="settings-secondary-btn" @click="goMonitoring">
+                            进入运行监控
+                          </button>
+                        </div>
+                        <p
+                          v-if="langfuseProbeMessage"
+                          class="settings-observability-message"
+                          :class="langfuseProbeStatus === 'success' ? 'settings-observability-message--success' : 'settings-observability-message--error'"
+                        >
+                          {{ langfuseProbeMessage }}
+                        </p>
+                      </div>
+                    </section>
+
+                    <section class="settings-config-card__block">
+                      <div class="settings-form-card__head">
+                        <div class="settings-form-card__icon">
+                          <KeyRound class="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p class="settings-form-card__eyebrow">Langfuse 密钥</p>
+                          <h4 class="settings-form-card__title">Public Key / Secret Key</h4>
+                          <p class="settings-form-card__desc">两项都配置后才会启用真实 Trace 查询与写入；留空不会覆盖已有值。</p>
+                        </div>
+                      </div>
+                      <div class="space-y-4">
+                        <div v-for="field in langfuseSecretFields" :key="field.key" class="settings-sensitive-item">
+                          <label :for="field.key" class="settings-label">{{ field.label }}</label>
+                          <p class="settings-helper">{{ field.description }}</p>
+                          <div v-if="configured[field.key]" class="settings-status-chip settings-status-chip--neutral">
+                            当前值：{{ displayValues[field.key] || '已配置' }}
+                          </div>
+                          <input
+                            :id="field.key"
+                            v-model="form[field.key]"
+                            type="password"
+                            class="settings-input"
+                            :placeholder="field.placeholder"
+                          />
+                          <label class="settings-toggle">
+                            <input v-model="clearSecretFlags[field.key]" type="checkbox" class="settings-toggle__input" />
+                            清空这个密钥
+                          </label>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
                 </article>
               </template>
             </div>
@@ -1041,10 +1308,15 @@ onMounted(() => {
                           <button
                             type="button"
                             class="settings-guide-dialog__media"
-                            @click="openGuideImage(step.image, step.alt, step.title)"
+                            :class="{ 'settings-guide-dialog__media--empty': !step.image }"
+                            :disabled="!step.image"
+                            @click="step.image && openGuideImage(step.image, step.alt || step.title, step.title)"
                           >
-                            <img :src="step.image" :alt="step.alt" class="settings-guide-dialog__image" />
-                            <span class="settings-guide-dialog__zoom">点击图片放大查看</span>
+                            <img v-if="step.image" :src="step.image" :alt="step.alt" class="settings-guide-dialog__image" />
+                            <span v-if="step.image" class="settings-guide-dialog__zoom">点击图片放大查看</span>
+                            <span v-else class="settings-guide-dialog__empty-media">
+                              {{ step.fields?.join(' / ') || 'Langfuse' }}
+                            </span>
                           </button>
                           <div class="settings-guide-dialog__copy">
                             <p class="settings-section-eyebrow">{{ activeGuide.eyebrow }}</p>
@@ -2357,6 +2629,32 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.94);
 }
 
+.settings-guide-dialog__media:disabled {
+  cursor: default;
+}
+
+.settings-guide-dialog__media--empty {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.12), transparent 30%),
+    linear-gradient(135deg, rgba(248, 250, 252, 0.96), rgba(238, 242, 255, 0.78));
+}
+
+.settings-guide-dialog__empty-media {
+  max-width: 80%;
+  border-radius: 9999px;
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 0.75rem 1rem;
+  text-align: center;
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: #4338ca;
+}
+
 .settings-guide-dialog__image {
   display: block;
   width: 100%;
@@ -2563,6 +2861,12 @@ onMounted(() => {
   border: 1px solid rgba(226, 232, 240, 0.86);
 }
 
+.settings-inline-badge--success {
+  border-color: rgba(16, 185, 129, 0.22);
+  background: var(--ui-success-soft);
+  color: var(--ui-success);
+}
+
 .settings-field-grid {
   display: grid;
   gap: 1rem;
@@ -2668,6 +2972,61 @@ onMounted(() => {
   width: 1rem;
   height: 1rem;
   accent-color: var(--ui-accent);
+}
+
+.settings-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: 1.1rem;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 0.9rem 1rem;
+}
+
+.settings-switch-row span {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.settings-switch-row strong {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #1f2937;
+}
+
+.settings-switch-row small {
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+.settings-observability-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.settings-observability-message {
+  border-radius: 1rem;
+  padding: 0.8rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.settings-observability-message--success {
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: var(--ui-success-soft);
+  color: var(--ui-success);
+}
+
+.settings-observability-message--error {
+  border: 1px solid rgba(244, 63, 94, 0.18);
+  background: var(--ui-danger-soft);
+  color: var(--ui-danger);
 }
 
 .settings-status-chip {
@@ -2860,7 +3219,7 @@ onMounted(() => {
 
 @media (min-width: 1120px) {
   .settings-step-nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .settings-guide-dialog__slide {
@@ -3044,6 +3403,27 @@ onMounted(() => {
 
 :global(html.dark) .settings-input::placeholder {
   color: rgba(255, 255, 255, 0.32);
+}
+
+:global(html.dark) .settings-switch-row,
+:global(html.dark) .settings-guide-dialog__empty-media {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:global(html.dark) .settings-guide-dialog__media--empty {
+  background:
+    radial-gradient(circle at 20% 20%, rgba(96, 165, 250, 0.14), transparent 30%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.82), rgba(30, 41, 59, 0.64));
+}
+
+:global(html.dark) .settings-switch-row strong,
+:global(html.dark) .settings-guide-dialog__empty-media {
+  color: #e2e8f0;
+}
+
+:global(html.dark) .settings-switch-row small {
+  color: #94a3b8;
 }
 
 :global(html.dark) .settings-input:focus {

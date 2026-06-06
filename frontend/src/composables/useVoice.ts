@@ -1,6 +1,22 @@
 import { ref } from 'vue'
 import { speechToText, textToSpeech } from '../services/interview'
 
+let sharedAudioCtx: AudioContext | null = null
+
+function getSharedAudioContext() {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = new AudioContext()
+  }
+  return sharedAudioCtx
+}
+
+export async function primeVoicePlayback(): Promise<void> {
+  const audioCtx = getSharedAudioContext()
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume()
+  }
+}
+
 /**
  * 语音交互 composable
  * - 录音：MediaRecorder -> PCM -> 后端 STT
@@ -15,7 +31,6 @@ export function useVoice() {
   let mediaRecorder: MediaRecorder | null = null
   let audioChunks: Blob[] = []
   let currentAudioSource: AudioBufferSourceNode | null = null
-  let audioCtx: AudioContext | null = null
 
   const audioConstraints: MediaTrackConstraints = {
     sampleRate: 16000,
@@ -130,8 +145,11 @@ export function useVoice() {
 
     isPlaying.value = true
     try {
+      const audioCtx = getSharedAudioContext()
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume()
+      }
       const wavBuffer = await textToSpeech(text, per, spd)
-      if (!audioCtx) audioCtx = new AudioContext()
       const audioBuf = await audioCtx.decodeAudioData(wavBuffer)
 
       currentAudioSource = audioCtx.createBufferSource()
