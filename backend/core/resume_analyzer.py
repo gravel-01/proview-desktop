@@ -27,6 +27,7 @@ class ResumeAnalyzer:
         sections = self._extract_sections(ocr_text)
         # 第二步：生成优化建议
         suggestions = self._generate_suggestions(sections, job_title, report_context=report_context)
+        suggestions = self._validate_resume_suggestions(suggestions, sections)
         # 第三步：提取结构化数据 + 自动检测模板
         builder_data = self._extract_builder_data(ocr_text)
         return {"sections": sections, "suggestions": suggestions, "builder_data": builder_data}
@@ -126,6 +127,7 @@ class ResumeAnalyzer:
             raise RuntimeError("; ".join(thread_errors))
 
         suggestions = self._parse_json_array(suggestions_result["raw"], fallback_id_prefix="sug") if suggestions_result["raw"] else []
+        suggestions = self._validate_resume_suggestions(suggestions, sections)
         builder_data = self._parse_json_object(builder_result["raw"]) if builder_result["raw"] else {}
         builder_data = self._validate_builder_data(builder_data)
 
@@ -464,41 +466,249 @@ OCR 原文片段：
         return {}
 
     @staticmethod
+    def _to_text(value, default: str = "") -> str:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _to_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {'true', '1', 'yes', 'y', 'on'}:
+                return True
+            if normalized in {'false', '0', 'no', 'n', 'off', ''}:
+                return False
+        return bool(value)
+
+    @staticmethod
     def _validate_builder_data(data: dict) -> dict:
         """校验并补全 builder 格式数据"""
+        if not isinstance(data, dict):
+            data = {}
+
         # 确保 detectedTemplate 有效
         valid_templates = {'classic', 'modern', 'minimal', 'fresh', 'tech', 'creative', 'executive', 'elegant'}
         if data.get('detectedTemplate') not in valid_templates:
             data['detectedTemplate'] = 'classic'
 
         # 补全 basicInfo
-        if 'basicInfo' not in data:
+        if not isinstance(data.get('basicInfo'), dict):
             data['basicInfo'] = {}
         basic_defaults = {
             'name': '', 'gender': '', 'birthday': '', 'email': '',
             'mobile': '', 'location': '', 'workYears': '', 'photoUrl': ''
         }
         for key, default in basic_defaults.items():
-            if key not in data['basicInfo']:
-                data['basicInfo'][key] = default
+            data['basicInfo'][key] = ResumeAnalyzer._to_text(data['basicInfo'].get(key), default)
 
         # 处理 modules
-        if 'modules' not in data or not isinstance(data['modules'], list):
+        if not isinstance(data.get('modules'), list):
             data['modules'] = []
 
+        normalized_modules = []
         for idx, module in enumerate(data['modules']):
-            if 'id' not in module:
+            if not isinstance(module, dict):
+                continue
+            if not module.get('id'):
                 module['id'] = f"mod_{uuid.uuid4().hex[:12]}"
-            if 'visible' not in module:
-                module['visible'] = True
-            if 'sortIndex' not in module:
+            module['id'] = ResumeAnalyzer._to_text(module.get('id'))
+            module['type'] = ResumeAnalyzer._to_text(module.get('type'), 'custom')
+            module['title'] = ResumeAnalyzer._to_text(module.get('title'))
+            module['visible'] = ResumeAnalyzer._to_bool(module.get('visible', True), True)
+            try:
+                module['sortIndex'] = int(module.get('sortIndex', idx))
+            except (TypeError, ValueError):
                 module['sortIndex'] = idx
-            if 'entries' in module and isinstance(module['entries'], list):
-                for entry in module['entries']:
-                    if 'id' not in entry:
-                        entry['id'] = f"ent_{uuid.uuid4().hex[:12]}"
 
+            if 'content' in module:
+                module['content'] = ResumeAnalyzer._to_text(module.get('content'))
+
+            if 'tags' in module:
+                tags = module.get('tags') if isinstance(module.get('tags'), list) else []
+                module['tags'] = [ResumeAnalyzer._to_text(tag) for tag in tags if ResumeAnalyzer._to_text(tag).strip()]
+
+            if 'skillBars' in module:
+                skill_bars = module.get('skillBars') if isinstance(module.get('skillBars'), list) else []
+                normalized_skills = []
+                for skill in skill_bars:
+                    if not isinstance(skill, dict):
+                        continue
+                    normalized_skill = dict(skill)
+                    normalized_skill['name'] = ResumeAnalyzer._to_text(normalized_skill.get('name'))
+                    try:
+                        level = int(normalized_skill.get('level', 0))
+                    except (TypeError, ValueError):
+                        level = 0
+                    normalized_skill['level'] = max(0, min(100, level))
+                    normalized_skills.append(normalized_skill)
+                module['skillBars'] = normalized_skills
+
+            if 'entries' in module:
+                entries = module.get('entries') if isinstance(module.get('entries'), list) else []
+                normalized_entries = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    normalized_entry = dict(entry)
+                    if not normalized_entry.get('id'):
+                        normalized_entry['id'] = f"ent_{uuid.uuid4().hex[:12]}"
+                    normalized_entry['id'] = ResumeAnalyzer._to_text(normalized_entry.get('id'))
+                    normalized_entry['timeStart'] = ResumeAnalyzer._to_text(normalized_entry.get('timeStart'))
+                    normalized_entry['timeEnd'] = ResumeAnalyzer._to_text(normalized_entry.get('timeEnd'))
+                    normalized_entry['isCurrent'] = ResumeAnalyzer._to_bool(normalized_entry.get('isCurrent', False), False)
+                    normalized_entry['orgName'] = ResumeAnalyzer._to_text(normalized_entry.get('orgName'))
+                    normalized_entry['role'] = ResumeAnalyzer._to_text(normalized_entry.get('role'))
+                    normalized_entry['detail'] = ResumeAnalyzer._to_text(normalized_entry.get('detail'))
+                    normalized_entries.append(normalized_entry)
+                module['entries'] = normalized_entries
+
+            normalized_modules.append(module)
+
+        data['modules'] = normalized_modules
         return data
+
+    @staticmethod
+    def _validate_resume_suggestions(suggestions: list, sections: list) -> list:
+        if not isinstance(suggestions, list) or not isinstance(sections, list):
+            return []
+
+        valid_issue_types = {
+            'LACK_OF_METRICS', 'WEAK_ACTION_VERB', 'VAGUE_DESCRIPTION',
+            'MISSING_STAR', 'ATS_KEYWORD_GAP', 'FORMAT_ISSUE'
+        }
+        section_by_id = {
+            section.get('id'): section
+            for section in sections
+            if isinstance(section, dict) and section.get('id')
+        }
+        normalized = []
+        seen_ids = set()
+
+        for item in suggestions:
+            if len(normalized) >= 10:
+                break
+            if not isinstance(item, dict):
+                continue
+
+            target_block_id = ResumeAnalyzer._to_text(item.get('targetBlockId')).strip()
+            target_field = ResumeAnalyzer._to_text(item.get('targetField'), 'content').strip() or 'content'
+            original_text = ResumeAnalyzer._to_text(item.get('originalText')).strip()
+            suggested_text = ResumeAnalyzer._to_text(item.get('suggestedText')).strip()
+
+            section = section_by_id.get(target_block_id)
+            content = ResumeAnalyzer._to_text(section.get('content')) if section else ''
+            if not section or target_field != 'content':
+                continue
+            if not original_text or not suggested_text or original_text == suggested_text:
+                continue
+            if original_text not in content:
+                continue
+
+            suggestion_id = ResumeAnalyzer._to_text(item.get('suggestionId')).strip()
+            if not suggestion_id or suggestion_id in seen_ids:
+                suggestion_id = f"sug_{len(normalized) + 1:03d}"
+            seen_ids.add(suggestion_id)
+
+            issue_type = ResumeAnalyzer._to_text(item.get('issueType'), 'VAGUE_DESCRIPTION').strip()
+            if issue_type not in valid_issue_types:
+                issue_type = 'VAGUE_DESCRIPTION'
+
+            normalized.append({
+                'suggestionId': suggestion_id,
+                'targetBlockId': target_block_id,
+                'targetField': 'content',
+                'issueType': issue_type,
+                'issueLabel': ResumeAnalyzer._to_text(item.get('issueLabel'), '优化建议').strip() or '优化建议',
+                'originalText': original_text,
+                'suggestedText': suggested_text,
+                'reason': ResumeAnalyzer._to_text(item.get('reason')).strip(),
+                'status': 'PENDING',
+            })
+
+        return normalized
+
+    @staticmethod
+    def validate_builder_polish_suggestions(suggestions: list, modules: list) -> list:
+        if not isinstance(suggestions, list) or not isinstance(modules, list):
+            return []
+
+        module_by_id = {
+            ResumeAnalyzer._to_text(module.get('id')): module
+            for module in modules
+            if isinstance(module, dict) and module.get('id')
+        }
+        normalized = []
+        seen_ids = set()
+
+        for item in suggestions:
+            if len(normalized) >= 10:
+                break
+            if not isinstance(item, dict):
+                continue
+
+            module_id = ResumeAnalyzer._to_text(item.get('moduleId')).strip()
+            module = module_by_id.get(module_id)
+            if not module:
+                continue
+
+            entry_id = ResumeAnalyzer._to_text(item.get('entryId')).strip()
+            field_path = ResumeAnalyzer._to_text(item.get('fieldPath')).strip()
+            original_text = ResumeAnalyzer._to_text(item.get('originalText')).strip()
+            suggested_text = ResumeAnalyzer._to_text(item.get('suggestedText')).strip()
+            if not field_path or not original_text or not suggested_text or original_text == suggested_text:
+                continue
+
+            normalized_original = original_text
+            normalized_suggested = suggested_text
+            normalized_entry_id = entry_id or None
+
+            if entry_id:
+                if field_path != 'detail' or not isinstance(module.get('entries'), list):
+                    continue
+                entry = next(
+                    (entry for entry in module['entries'] if isinstance(entry, dict) and ResumeAnalyzer._to_text(entry.get('id')) == entry_id),
+                    None,
+                )
+                if not entry:
+                    continue
+                current_value = ResumeAnalyzer._to_text(entry.get('detail'))
+                if not current_value or original_text not in current_value:
+                    continue
+                normalized_original = current_value
+                normalized_suggested = current_value.replace(original_text, suggested_text, 1)
+                if normalized_original == normalized_suggested:
+                    continue
+            else:
+                if field_path != 'content':
+                    continue
+                current_value = ResumeAnalyzer._to_text(module.get('content'))
+                if not current_value or original_text not in current_value:
+                    continue
+
+            suggestion_id = ResumeAnalyzer._to_text(item.get('id')).strip()
+            if not suggestion_id or suggestion_id in seen_ids:
+                suggestion_id = f"sug_{len(normalized) + 1:03d}"
+            seen_ids.add(suggestion_id)
+
+            normalized.append({
+                'id': suggestion_id,
+                'moduleId': module_id,
+                'entryId': normalized_entry_id,
+                'fieldPath': field_path,
+                'originalText': normalized_original,
+                'suggestedText': normalized_suggested,
+                'reason': ResumeAnalyzer._to_text(item.get('reason')).strip(),
+                'status': 'pending',
+            })
+
+        return normalized
 
     @staticmethod
     def _parse_json_array(raw: str, fallback_id_prefix: str = "item") -> list:
