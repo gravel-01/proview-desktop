@@ -454,31 +454,59 @@ class CareerPlanningService:
         strengths = [item.get("dimension", "") for item in evaluations if item.get("score", 0) >= 7]
         gaps = [item.get("dimension", "") for item in evaluations if item.get("score", 0) < 7]
         avg_score = float(stats.get("avg_score") or 0)
+        evaluation_count = len(evaluations)
 
-        if not strengths:
-            strengths = blueprint.strengths[:3]
-        if not gaps:
-            gaps = blueprint.gaps[:4]
+        # 没有真实评价数据时，不伪造个性化差距和优势，交由前端展示空状态
+        if not evaluations:
+            strengths = []
+            gaps = []
+        else:
+            if not strengths:
+                strengths = blueprint.strengths[:3]
+            if not gaps:
+                gaps = blueprint.gaps[:4]
 
         session_count = len(context.get("sessions") or [])
-        if avg_score >= 8.0:
+        has_resume = bool(context.get("resume"))
+        has_evaluations = evaluation_count > 0
+
+        if not has_resume and session_count == 0:
+            current_stage = "数据不足"
+            generation_mode = "empty"
+        elif not has_evaluations:
+            current_stage = "仅有面试记录"
+            generation_mode = "fallback"
+        elif avg_score >= 8.0:
             current_stage = "冲刺中"
+            generation_mode = "evidence"
         elif avg_score >= 6.5:
             current_stage = "成长中"
+            generation_mode = "evidence"
         else:
             current_stage = "打基础"
+            generation_mode = "evidence"
 
         resume = context.get("resume") or {}
-        source_summary = "；".join([
-            f"简历:{resume.get('file_name') or '未提供'}" if resume else "简历:未提供",
-            f"面试次数:{session_count}",
-            f"最近面试均分:{avg_score:.1f}",
-        ])
+        source_summary_parts = [
+            "简历:{}".format(resume.get("file_name") or "未上传") if resume else "简历:未上传",
+            "面试次数:{}".format(session_count),
+        ]
+        if has_evaluations:
+            source_summary_parts.append("结构化评价:{}条".format(evaluation_count))
+            source_summary_parts.append("最近面试均分:{:.1f}".format(avg_score))
+        else:
+            source_summary_parts.append("结构化评价:无")
+        source_summary = "；".join(source_summary_parts)
 
         return {
             "user_id": user_id,
             "target_role": target_role,
             "current_stage": current_stage,
+            "generation_mode": generation_mode,
+            "has_resume": has_resume,
+            "has_evaluations": has_evaluations,
+            "evaluation_count": evaluation_count,
+            "session_count": session_count,
             "interest_tags": json.dumps([blueprint.stage_label, target_role], ensure_ascii=False),
             "strength_tags": json.dumps(strengths, ensure_ascii=False),
             "gap_tags": json.dumps(gaps, ensure_ascii=False),
@@ -491,6 +519,8 @@ class CareerPlanningService:
 
     def _save_profile(self, profile: Dict[str, Any]) -> None:
         storage_user_id = _normalize_user_id(profile["user_id"])
+        # source_summary 等扩展字段当前不落库，仅内存返回，避免不兼容旧 schema。
+        # generation_mode 同样作为生成结果直接透传给前端。
         with self._managed_connection() as conn:
             existing = conn.execute("SELECT user_id FROM career_profiles WHERE user_id = ?", (storage_user_id,)).fetchone()
             if existing:
@@ -693,6 +723,32 @@ class CareerPlanningService:
             row = conn.execute("SELECT * FROM career_profiles WHERE user_id = ?", (storage_user_id,)).fetchone()
             return self._row_to_dict(row)
 
+    def _profile_with_metadata(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """为已保存的 profile 补上 generation_mode、has_resume、has_evaluations 等运行时元数据。"""
+        if not profile:
+            return profile
+        context = self._collect_user_context(profile.get("user_id"))
+        stats = context.get("stats") or {}
+        evaluations = stats.get("evaluations") or []
+        evaluation_count = len(evaluations)
+        session_count = len(context.get("sessions") or [])
+        has_resume = bool(context.get("resume"))
+        has_evaluations = evaluation_count > 0
+
+        if not has_resume and session_count == 0:
+            generation_mode = "empty"
+        elif not has_evaluations:
+            generation_mode = "fallback"
+        else:
+            generation_mode = "evidence"
+
+        profile["generation_mode"] = generation_mode
+        profile["has_resume"] = has_resume
+        profile["has_evaluations"] = has_evaluations
+        profile["evaluation_count"] = evaluation_count
+        profile["session_count"] = session_count
+        return profile
+
     def _fetch_plans(self, user_id: int) -> List[Dict[str, Any]]:
         storage_user_id = _normalize_user_id(user_id)
         with self._managed_connection() as conn:
@@ -772,7 +828,7 @@ class CareerPlanningService:
             if existing_active:
                 detail = self._fetch_plan_detail(int(existing_active["id"]), user_id) or {}
                 return {
-                    "profile": self._fetch_profile(user_id),
+                    "profile": self._profile_with_metadata(self._fetch_profile(user_id)),
                     "plans": self._fetch_plans(user_id),
                     "current_plan": detail.get("plan") or existing_active,
                     "milestones": detail.get("milestones") or [],
@@ -794,7 +850,7 @@ class CareerPlanningService:
 
         detail = self._fetch_plan_detail(plan_bundle["plan_id"], user_id) or {}
         return {
-            "profile": self._fetch_profile(user_id),
+            "profile": self._profile_with_metadata(self._fetch_profile(user_id)),
             "plans": self._fetch_plans(user_id),
             "current_plan": detail.get("plan") or {},
             "milestones": detail.get("milestones") or [],
@@ -804,8 +860,63 @@ class CareerPlanningService:
             "plan_bundle": plan_bundle,
         }
 
+    def _aggregate_milestone_statuses(self, conn: sqlite3.Connection, plan_id: int) -> None:
+        """根据任务进度动态计算并更新 milestone 状态和 progress。
+
+        规则：
+        - 所有任务 status='completed'        -> milestone.status='completed'
+        - 任一任务 progress>0 或 status≠'pending' -> milestone.status='in_progress'
+        - 否则                                -> milestone.status='planned'
+
+        progress 为该 milestone 下任务的平均进度。
+        """
+        rows = conn.execute(
+            """
+            SELECT m.id AS milestone_id,
+                   COUNT(t.id) AS task_count,
+                   SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                   COALESCE(AVG(t.progress), 0) AS avg_progress
+            FROM career_milestones m
+            LEFT JOIN career_tasks t ON t.milestone_id = m.id
+            WHERE m.plan_id = ?
+            GROUP BY m.id
+            """,
+            (plan_id,),
+        ).fetchall()
+        now = _utc_now()
+        for row in rows:
+            milestone_id = int(row["milestone_id"])
+            task_count = int(row["task_count"] or 0)
+            completed_count = int(row["completed_count"] or 0)
+            avg_progress = float(row["avg_progress"] or 0)
+
+            if task_count == 0:
+                next_status = "planned"
+            elif completed_count >= task_count:
+                next_status = "completed"
+            elif completed_count > 0 or avg_progress > 0:
+                next_status = "in_progress"
+            else:
+                next_status = "planned"
+
+            conn.execute(
+                """
+                UPDATE career_milestones
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (next_status, now, milestone_id),
+            )
+
+    def _fetch_milestones_for_plan(self, conn: sqlite3.Connection, plan_id: int) -> List[Dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM career_milestones WHERE plan_id = ? ORDER BY sort_order ASC, id ASC",
+            (plan_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def build_dashboard(self, user_id: int) -> Dict[str, Any]:
-        profile = self._fetch_profile(user_id)
+        profile = self._profile_with_metadata(self._fetch_profile(user_id))
         plans = self._fetch_plans(user_id)
         current_plan = next((plan for plan in plans if plan.get("status") == "active"), plans[0] if plans else None)
 
@@ -842,6 +953,11 @@ class CareerPlanningService:
             tasks = detail.get("tasks") or []
             logs = detail.get("logs") or []
             recommendations = _safe_json_loads(current_plan.get("recommendation_json", ""), [])
+
+            # 拉取数据时重新聚合 milestone 状态，保证 dashboard、roadmap、tasks 进度口径一致
+            with self._managed_connection() as conn:
+                self._aggregate_milestone_statuses(conn, int(current_plan["id"]))
+                milestones = self._fetch_milestones_for_plan(conn, int(current_plan["id"]))
 
         dashboard_stats = {
             "plan_count": len(plans),
@@ -908,5 +1024,8 @@ class CareerPlanningService:
                     "INSERT INTO career_progress_logs (task_id, note, progress_delta, created_at) VALUES (?, ?, ?, ?)",
                     (task_id, note, next_progress - float(task.get("progress") or 0), _utc_now()),
                 )
+
+            # 任务进度变化后，联动更新该 milestone 下所有 milestone 状态，保证 dashboard/roadmap/tasks 进度一致
+            self._aggregate_milestone_statuses(conn, int(task.get("plan_id")))
 
         return self._fetch_plan_detail(int(task.get("plan_id")), user_id)

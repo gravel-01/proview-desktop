@@ -115,6 +115,93 @@ class CareerPlanningServiceTests(unittest.TestCase):
         self.assertEqual(dashboard["tasks"], [])
         self.assertEqual(dashboard["stats"]["progress_rate"], 0)
 
+    def test_profile_uses_empty_mode_when_no_resume_and_no_session(self):
+        """第一阶段：无简历且无面试时，profile 不应伪造个性化结论，generation_mode='empty'。"""
+        empty_service = CareerPlanningService(
+            EmptyContextDataClient(),
+            db_path=str(self.temp_dir / "career-no-context.sqlite3"),
+        )
+        # 显式提供 target_role 以绕过 ValueError
+        result = empty_service.generate_plan(
+            user_id=1, target_role="高级前端开发工程师", refresh=True,
+        )
+        profile = result["profile"]
+        self.assertEqual(profile["generation_mode"], "empty")
+        self.assertEqual(profile["has_resume"], False)
+        self.assertEqual(profile["has_evaluations"], False)
+        self.assertEqual(profile["session_count"], 0)
+        import json as _json
+        self.assertEqual(_json.loads(profile["gap_tags"]), [])
+        self.assertEqual(_json.loads(profile["strength_tags"]), [])
+
+    def test_profile_uses_fallback_mode_when_no_evaluations(self):
+        """第一阶段：有面试无结构化评价时，profile 使用 fallback 模式且 gaps 为空。"""
+        class NoEvalDataClient(MockDataClient):
+            def get_session_statistics(self, session_id):
+                return {"turn_count": 4, "evaluations": [], "avg_score": 0}
+
+        no_eval = NoEvalDataClient()
+        no_eval.get_session_statistics = lambda session_id: {"turn_count": 4, "evaluations": [], "avg_score": 0}
+        svc = CareerPlanningService(
+            no_eval,
+            db_path=str(self.temp_dir / "career-no-eval.sqlite3"),
+        )
+        result = svc.generate_plan(
+            user_id=1,
+            target_role="高级前端开发工程师",
+            career_goal="6 个月内拿到 offer",
+            horizon_months=6,
+            refresh=True,
+        )
+        profile = result["profile"]
+        self.assertEqual(profile["generation_mode"], "fallback")
+        self.assertEqual(profile["has_evaluations"], False)
+        self.assertEqual(profile["evaluation_count"], 0)
+        # gap_tags 应当为空（不强补模板）
+        import json as _json
+        self.assertEqual(_json.loads(profile["gap_tags"]), [])
+
+    def test_milestone_status_syncs_after_task_completion(self):
+        """第一阶段：完成任务后，对应 milestone 应自动变为 completed/in_progress。"""
+        result = self.service.generate_plan(
+            user_id=1,
+            target_role="高级前端开发工程师",
+            career_goal="6 个月内拿到 offer",
+            horizon_months=6,
+            refresh=True,
+        )
+        first_task = result["tasks"][0]
+        first_milestone_id = first_task["milestone_id"]
+        before_status = next(m for m in result["milestones"] if m["id"] == first_milestone_id)["status"]
+        self.assertEqual(before_status, "planned")
+
+        # 完成该 milestone 下所有 task
+        milestone_tasks = [t for t in result["tasks"] if t["milestone_id"] == first_milestone_id]
+        for task in milestone_tasks:
+            self.service.update_task(user_id=1, task_id=task["id"], status="completed", progress=100, note="done")
+
+        # 重新拉 dashboard，milestone 状态应为 completed
+        dashboard = self.service.build_dashboard(1)
+        updated_milestone = next(m for m in dashboard["milestones"] if m["id"] == first_milestone_id)
+        self.assertEqual(updated_milestone["status"], "completed")
+
+    def test_milestone_status_in_progress_when_partial(self):
+        """第一阶段：部分任务推进时，milestone 状态应为 in_progress。"""
+        result = self.service.generate_plan(
+            user_id=1,
+            target_role="高级前端开发工程师",
+            career_goal="6 个月内拿到 offer",
+            horizon_months=6,
+            refresh=True,
+        )
+        first_task = result["tasks"][0]
+        first_milestone_id = first_task["milestone_id"]
+        # 只 +25%，不全完成
+        self.service.update_task(user_id=1, task_id=first_task["id"], status="in_progress", progress=25, note="partial")
+        dashboard = self.service.build_dashboard(1)
+        updated_milestone = next(m for m in dashboard["milestones"] if m["id"] == first_milestone_id)
+        self.assertEqual(updated_milestone["status"], "in_progress")
+
 
 class CareerPlanningDocsRepositoryTests(unittest.TestCase):
     def test_loads_structured_documents(self):

@@ -45,16 +45,21 @@ const gapTags = computed(() => {
   }
 })
 
-const targetRoleSuggestions = [
-  '数据湖架构师',
-  '报表自动化工程师',
-  '数字健康产品经理',
-  '向量数据库工程师',
-  '老年科技产品经理',
-  'Vue 前端工程师（外包）',
-  '客户关系管理系统工程师',
-  '无人机飞控工程师',
-]
+const targetRoleSuggestions = computed(() => {
+  // 仅展示与用户历史相关的候选目标岗位：来自最近一次面试的 position。
+  // 避免展示与用户数据无关的硬编码建议（如"数据湖架构师"等）。
+  const lastSession = store.dashboard?.current_plan?.target_role
+  const profileRole = store.profile?.target_role
+  const candidates = [profileRole, lastSession].filter(Boolean) as string[]
+  if (!candidates.length) return []
+  // 去重并保留最近 4 个
+  const unique: string[] = []
+  for (const role of candidates) {
+    if (!unique.includes(role)) unique.push(role)
+    if (unique.length >= 4) break
+  }
+  return unique
+})
 
 const careerGoalSuggestions = [
   '6 个月内拿到目标岗位 offer',
@@ -146,8 +151,8 @@ export default {
             职业生涯规划
           </div>
           <div class="space-y-3">
-            <h1 class="text-3xl font-black tracking-tight text-slate-900 dark:text-white sm:text-4xl">从简历和面试结果出发，生成可执行的职业路径。</h1>
-            <p class="max-w-3xl text-sm leading-7 text-slate-600 dark:text-slate-400">这个页面会把现有的简历、面试历史和评估结果合并成一个可跟踪的职业规划面板。你可以直接生成目标岗位路线、补齐技能差距、以及标记阶段任务进度。</p>
+            <h1 class="text-3xl font-black tracking-tight text-slate-900 dark:text-white sm:text-4xl">围绕目标岗位梳理可执行的成长路线。</h1>
+            <p class="max-w-3xl text-sm leading-7 text-slate-600 dark:text-slate-400">基于你的简历和最近面试评估结果，生成可跟踪的阶段路线、任务清单和能力差距视图。如果暂时没有结构化评价数据，会先提供基础模板规划。</p>
           </div>
         </div>
         
@@ -168,6 +173,22 @@ export default {
             </div>
           </div>
           <div class="flex gap-2">
+            <!-- 数据来源徽标（第一阶段：清晰告知用户当前规划基于哪些数据） -->
+            <div class="hidden items-center gap-1.5 self-center rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-[10px] font-bold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 sm:inline-flex"
+                 :title="`简历:${(store.profile as any)?.has_resume ? '已上传' : '未上传'} · 面试:${(store.profile as any)?.session_count ?? 0}次 · 评价:${(store.profile as any)?.evaluation_count ?? 0}条`">
+              <span class="h-1.5 w-1.5 rounded-full"
+                    :class="{
+                      'bg-emerald-500': (store.profile as any)?.generation_mode === 'evidence',
+                      'bg-amber-500': (store.profile as any)?.generation_mode === 'fallback',
+                      'bg-rose-500': (store.profile as any)?.generation_mode === 'empty',
+                      'bg-slate-400': !(store.profile as any)?.generation_mode,
+                    }"></span>
+              <span>{{
+                (store.profile as any)?.generation_mode === 'evidence' ? '基于真实评价' :
+                (store.profile as any)?.generation_mode === 'fallback' ? '基础模板（缺评价）' :
+                (store.profile as any)?.generation_mode === 'empty' ? '数据不足' : '未生成'
+              }}</span>
+            </div>
             <button
               @click="emit('refresh')"
               class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-indigo-300 hover:text-indigo-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
@@ -400,6 +421,9 @@ export default {
                 <span class="font-semibold text-indigo-600">{{ store.stats.active_task_count }} 个</span>
               </div>
             </div>
+            <p v-if="profileData?.source_summary" class="mt-2 border-t border-slate-200/60 pt-2 text-[10px] leading-4 text-slate-500 dark:border-white/10 dark:text-slate-400">
+              {{ profileData.source_summary }}
+            </p>
           </div>
         </div>
       </div>

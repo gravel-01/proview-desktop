@@ -19,7 +19,9 @@ const stats = computed(() => {
   const total = store.tasks.length
   const completed = store.tasks.filter(t => t.status === 'completed').length
   const inProgress = total - completed
-  const avgProgress = total > 0 ? Math.round(store.tasks.reduce((sum, t) => sum + (t.progress || 0), 0) / total) : 0
+  // 任务页平均进度与 dashboard.stats.progress_rate 口径一致，
+  // 避免 dashboard / roadmap / tasks 三处进度数字相互矛盾。
+  const avgProgress = typeof store.stats?.progress_rate === 'number' ? store.stats.progress_rate : 0
   return { total, completed, inProgress, avgProgress }
 })
 
