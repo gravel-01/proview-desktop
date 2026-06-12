@@ -95,10 +95,15 @@ try {
 }
 
 if (-not $hasPyInstaller) {
-    & python -m pip install pyinstaller
+    & python -m pip install pyinstaller --no-warn-script-location
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to install PyInstaller.'
     }
+}
+
+& python -m pip install -r (Join-Path $backendDir 'requirements.txt')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Failed to install backend requirements.'
 }
 
 $args = @(

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CareerOverviewHero from '../../components/career-planning/CareerOverviewHero.vue'
+import CareerInsightSidebar from '../../components/career-planning/CareerInsightSidebar.vue'
 import { useCareerPlanningStore } from '../../stores/careerPlanning'
 
 const store = useCareerPlanningStore()
@@ -24,6 +25,10 @@ async function handleGenerate() {
     store.error = error instanceof Error ? error.message : '生成职业规划失败'
   }
 }
+
+function handleSelectPlan(planId: number) {
+  store.selectPlan(planId)
+}
 </script>
 
 <template>
@@ -41,5 +46,15 @@ async function handleGenerate() {
       @refresh="handleRefresh"
       @generate="handleGenerate"
     />
+
+    <div v-if="store.recommendations.length || (store.plans && store.plans.length > 1)" class="grid gap-4 lg:grid-cols-3">
+      <CareerInsightSidebar
+        :profile="store.profile"
+        :recommendations="store.recommendations"
+        :plans="store.plans"
+        :current-plan="store.currentPlan"
+        @select-plan="handleSelectPlan"
+      />
+    </div>
   </section>
 </template>
