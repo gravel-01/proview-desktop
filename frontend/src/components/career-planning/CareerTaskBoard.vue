@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, Clock, ListTodo, Zap, BookOpen, Target, Code, GraduationCap, List } from 'lucide-vue-next'
+import { CheckCircle2, Clock, ListTodo, Zap, BookOpen, Target, Code, GraduationCap, List, ExternalLink } from 'lucide-vue-next'
 import type { CareerTask } from '../../types/career-planning'
 
 defineProps<{
@@ -11,6 +11,8 @@ const emit = defineEmits<{
   'select-task': [taskId: number]
   'complete-task': [taskId: number]
   'add-progress': [taskId: number]
+  // Phase 4: task → doc section 跳转事件
+  'open-doc': [{ docId: string; sectionIdx: number; reason: string }]
 }>()
 
 // Icon component mapping based on backend task_type_icon field
@@ -123,13 +125,37 @@ export default {
             
             <!-- 进度条 -->
             <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-              <div 
+              <div
                 class="h-full rounded-full bg-gradient-to-r transition-all duration-500"
                 :class="getProgressColor(task.progress || 0)"
                 :style="{ width: `${task.progress || 0}%` }"
               ></div>
             </div>
-            
+
+            <!-- Phase 4: 任务 → 文档章节 关联跳转按钮（resource_refs 由后端 tag_resource_to_task 派生） -->
+            <div
+              v-if="task.resource_refs && task.resource_refs.length"
+              class="mt-3 rounded-xl border border-indigo-200/70 bg-indigo-50/60 p-2.5 dark:border-indigo-500/30 dark:bg-indigo-500/10"
+              data-testid="task-resource-refs"
+            >
+              <div class="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-300">
+                <BookOpen class="h-3 w-3" />
+                推荐资源 · {{ task.resource_refs.length }} 条
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="ref in task.resource_refs"
+                  :key="`${ref.doc_id}-${ref.section_idx}`"
+                  @click.stop="emit('open-doc', { docId: ref.doc_id, sectionIdx: ref.section_idx, reason: ref.reason })"
+                  class="group inline-flex max-w-full items-center gap-1 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-indigo-700 shadow-sm transition hover:border-indigo-400 hover:bg-indigo-100 hover:text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-200 dark:hover:bg-indigo-500/25"
+                  :title="ref.reason"
+                >
+                  <span class="truncate">📚 {{ ref.reason || '查看文档' }}</span>
+                  <ExternalLink class="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
+                </button>
+              </div>
+            </div>
+
             <!-- 底部信息 -->
             <div class="mt-3 flex items-center justify-between text-xs">
               <div class="flex items-center gap-3">

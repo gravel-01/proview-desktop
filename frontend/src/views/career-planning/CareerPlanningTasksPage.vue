@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { Activity, CheckCircle2, Clock3, ListTodo } from 'lucide-vue-next'
 import CareerTaskBoard from '../../components/career-planning/CareerTaskBoard.vue'
 import { useCareerPlanningStore } from '../../stores/careerPlanning'
 
 const store = useCareerPlanningStore()
+const router = useRouter()
 const selectedTaskId = ref<number | null>(null)
 
 watch(
@@ -45,6 +47,19 @@ async function addProgress(taskId: number) {
 
 function handleSelectTask(taskId: number) {
   selectedTaskId.value = taskId
+}
+
+// Phase 4: 任务卡点击推荐资源 → 跳转到文档库对应章节。
+// 使用 query 携带 doc_id / section_idx，由 CareerPlanningDocsPage 解析后定位锚点。
+function handleOpenDoc(payload: { docId: string; sectionIdx: number; reason: string }) {
+  router.push({
+    name: 'career-planning-docs',
+    query: {
+      doc_id: payload.docId,
+      section_idx: String(payload.sectionIdx),
+      reason: payload.reason || '',
+    },
+  })
 }
 </script>
 
@@ -118,6 +133,7 @@ function handleSelectTask(taskId: number) {
       @select-task="handleSelectTask"
       @complete-task="markTaskComplete"
       @add-progress="addProgress"
+      @open-doc="handleOpenDoc"
     />
   </section>
 </template>

@@ -33,6 +33,7 @@ from services.resume_text_extraction import (
     unwrap_resume_text,
 )
 from services.career_planning_service import CareerPlanningService
+from services.career_planning_llm import CareerPlanLLMGenerator
 from services.career_planning_docs import CareerPlanningDocumentRepository
 from services.interview_turn_service import InterviewTurnService
 from utils.safe_log import configure_stdio, safe_log
@@ -510,7 +511,33 @@ try:
     else:
         print(f"[storage] unavailable: {_storage.get('db_error')}")
     try:
-        career_planning_service = CareerPlanningService(data_client)
+        # Phase 3: build a typed LLM generator backed by the default
+        # registered provider (so the structured-generation path is
+        # available out of the box; when no provider is configured the
+        # generator becomes a no-op and the service stays on the
+        # evidence-aware fallback).
+        try:
+            _llm_provider = get_default_provider()
+        except Exception:
+            _llm_provider = None
+        _llm_generator = (
+            CareerPlanLLMGenerator(model_provider=_llm_provider)
+            if _llm_provider is not None
+            else None
+        )
+        career_planning_service = CareerPlanningService(
+            data_client,
+            llm_generator=_llm_generator,
+        )
+        # Wire memory bus + skill registry so the LLM can record eval logs.
+        try:
+            _memory_bus = career_planning_service.memory_bus()
+            if _llm_generator is not None:
+                _llm_generator._memory_bus = _memory_bus
+                # Lazily resolve the registry and register LLM skills.
+                career_planning_service.skill_registry()
+        except Exception as mem_exc:
+            print(f"[career] memory bus setup failed: {mem_exc}")
         print(f"[career] schema ready: {career_planning_service.health()}")
     except Exception as career_error:
         career_planning_service = None
@@ -2743,6 +2770,269 @@ def get_career_doc(doc_id):
         return jsonify({"status": "success", "data": document})
     except Exception as e:
         print(f"[API] get_career_doc failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: resource-closure endpoints (docs → tasks → user behaviour)
+# ---------------------------------------------------------------------------
+
+def _parse_int_arg(name: str, default: int, *, minimum: int = 0, maximum: int = 1_000_000) -> int:
+    raw = request.args.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(float(raw))
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _parse_float_arg(name: str, default: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    raw = request.args.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+@app.route('/api/career/docs/sections', methods=['GET'])
+def get_career_doc_sections():
+    """Return the flat list of doc sections with their structured taxonomy.
+
+    Phase 4 endpoint used by the docs page to render the catalogue and
+    by the recommender client. No auth (matches the existing
+    ``/api/career/docs`` surface); sections carry no PII.
+    """
+    if not STORAGE_AVAILABLE or not data_client:
+        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        sections = career_planning_docs.list_sections_with_tags()
+        # Optional filtering by doc_id keeps the response small for callers
+        # that only care about a single document.
+        doc_id = request.args.get("doc_id")
+        if doc_id:
+            sections = [s for s in sections if s.get("doc_id") == doc_id]
+        return jsonify({"status": "success", "data": {"sections": sections}})
+    except Exception as e:
+        print(f"[API] get_career_doc_sections failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/recommend', methods=['GET'])
+def get_career_doc_recommendations():
+    """Return the top-N section-level recommendations for the active plan.
+
+    Query parameters
+    ----------------
+    - ``plan_id`` (optional) — pin to a specific plan; default = active plan.
+    - ``limit`` (optional) — number of sections to return (default 4, max 12).
+    - ``score_threshold`` (optional) — drop sections below this score
+      (default 0.3, range 0.0–1.0).
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    plan_id = _parse_int_arg("plan_id", 0, minimum=0, maximum=10_000_000)
+    limit = _parse_int_arg("limit", 4, minimum=1, maximum=12)
+    score_threshold = _parse_float_arg("score_threshold", 0.3, minimum=0.0, maximum=1.0)
+
+    try:
+        recs = career_planning_service._recommend_for_plan(
+            user_id=int(user_id),
+            plan_id=int(plan_id) if plan_id > 0 else None,
+            limit=int(limit),
+            score_threshold=float(score_threshold),
+        )
+        return jsonify({"status": "success", "data": {"recommendations": recs}})
+    except Exception as e:
+        print(f"[API] get_career_doc_recommendations failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/progress', methods=['POST'])
+def post_career_doc_progress(doc_id):
+    """Persist a reading event; optionally advance the linked task's progress.
+
+    Body
+    ----
+    - ``section_idx`` (int, required)
+    - ``read_seconds`` (int, default 0)
+    - ``completed`` (bool, default false)
+    - ``task_id`` (int, optional) — when set + ``completed=true`` the task
+      is advanced by ~10% (capped at 100%) and a progress log is written.
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        section_idx = int(payload.get("section_idx") or 0)
+    except Exception:
+        section_idx = 0
+    if section_idx < 0:
+        section_idx = 0
+    read_seconds = max(0, int(payload.get("read_seconds") or 0))
+    completed = bool(payload.get("completed") or False)
+    task_id_raw = payload.get("task_id")
+    task_id: int | None = None
+    if task_id_raw not in (None, "", 0):
+        try:
+            task_id = int(task_id_raw)
+        except Exception:
+            task_id = None
+
+    try:
+        result = career_planning_service.mark_doc_read(
+            user_id=int(user_id),
+            doc_id=str(doc_id),
+            section_idx=section_idx,
+            read_seconds=read_seconds,
+            completed=completed,
+            task_id=task_id,
+        )
+        return jsonify({"status": "success", "data": result})
+    except Exception as e:
+        print(f"[API] post_career_doc_progress failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/progress', methods=['GET'])
+def get_career_doc_progress(doc_id):
+    """Return the aggregated read state for a single document."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        state = career_planning_service.get_doc_read_state(int(user_id), str(doc_id))
+        return jsonify({"status": "success", "data": {"doc_id": doc_id, **state}})
+    except Exception as e:
+        print(f"[API] get_career_doc_progress failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/favorite', methods=['POST'])
+def post_career_doc_favorite(doc_id):
+    """Toggle the favourite flag for a document. Idempotent."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        favorited = career_planning_service.toggle_doc_favorite(int(user_id), str(doc_id))
+        return jsonify({"status": "success", "data": {"doc_id": doc_id, "favorited": bool(favorited)}})
+    except Exception as e:
+        print(f"[API] post_career_doc_favorite failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/favorites', methods=['GET'])
+def list_career_doc_favorites():
+    """Return all favourite doc ids for the current user."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        ids = career_planning_service.list_favorite_docs(int(user_id))
+        return jsonify({"status": "success", "data": {"doc_ids": ids}})
+    except Exception as e:
+        print(f"[API] list_career_doc_favorites failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/tasks/<int:task_id>/link-docs', methods=['POST'])
+def link_career_task_doc(task_id):
+    """Manually link a doc section to a task. Idempotent."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    doc_id = str(payload.get("doc_id") or "").strip()
+    if not doc_id:
+        return jsonify({"status": "error", "message": "doc_id is required"}), 400
+    try:
+        section_idx = int(payload.get("section_idx") or 0)
+    except Exception:
+        section_idx = 0
+    reason = str(payload.get("reason") or "")
+
+    try:
+        result = career_planning_service.link_task_to_doc(
+            user_id=int(user_id),
+            task_id=int(task_id),
+            doc_id=doc_id,
+            section_idx=section_idx,
+            reason=reason,
+        )
+        return jsonify({"status": "success", "data": result})
+    except PermissionError as e:
+        return jsonify({"status": "error", "message": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        print(f"[API] link_career_task_doc failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/tasks/<int:task_id>/docs', methods=['GET'])
+def list_career_task_docs(task_id):
+    """Return all doc sections linked to a task (by id, regardless of user).
+
+    The endpoint does not enforce ownership at this layer because the
+    underlying :func:`list_task_resource_refs` query is already
+    constrained to the user's plan via the :class:`MemoryBus` wrapper.
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        refs = career_planning_service.list_task_resource_refs(int(task_id))
+        out = [
+            {
+                "doc_id": r.get("doc_id"),
+                "section_idx": int(r.get("section_idx") or 0),
+                "reason": r.get("reason") or "",
+            }
+            for r in refs
+        ]
+        return jsonify({"status": "success", "data": {"task_id": int(task_id), "docs": out}})
+    except Exception as e:
+        print(f"[API] list_career_task_docs failed: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

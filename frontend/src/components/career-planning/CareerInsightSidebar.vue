@@ -1,42 +1,70 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { FileText, Sparkles, Target } from 'lucide-vue-next'
-import type { CareerPlan, CareerProfile, CareerRecommendation } from '../../types/career-planning'
+import { BookOpen, ExternalLink, Star } from 'lucide-vue-next'
+import type { CareerDocRecommendation } from '../../types/career-planning'
 
+/**
+ * Phase 5: 侧边栏只保留"推荐文档章节"。其余 4 个单元（能力画像 /
+ * 数据来源与证据 / 资源建议 / 计划历史）已下沉到 Hero 内的
+ * CareerOverviewInsightGrid 2×2 网格,本组件只承载资源闭环入口。
+ */
 const props = defineProps<{
-  profile: CareerProfile | Record<string, unknown> | null
-  recommendations: CareerRecommendation[]
-  plans: CareerPlan[]
-  currentPlan: CareerPlan | Record<string, unknown> | null
+  // Phase 4: 文档推荐 & 收藏(来自 dashboard.doc_recommendations / favorite_doc_ids)
+  docRecommendations?: CareerDocRecommendation[]
+  favoriteDocIds?: string[]
 }>()
 
 const emit = defineEmits<{
-  'select-plan': [planId: number]
+  // Phase 4: 点击推荐文档章节 → 跳转到文档库对应位置
+  'open-doc': [{ docId: string; sectionIdx: number; reason: string }]
+  // Phase 4: 收藏 / 取消收藏(顶栏快捷入口)
+  'toggle-favorite': [docId: string]
 }>()
 
-const profileData = computed<CareerProfile | null>(() => {
-  return props.profile && typeof props.profile === 'object' ? (props.profile as unknown as CareerProfile) : null
+// Phase 4: 推荐文档(来自 dashboard.doc_recommendations)
+const relevantDocs = computed<CareerDocRecommendation[]>(() => {
+  const list = props.docRecommendations || []
+  // 按 score 降序、相关任务数降序,确保最有用的章节在最上面
+  return [...list].sort((a, b) => {
+    const scoreDiff = (b.score ?? 0) - (a.score ?? 0)
+    if (Math.abs(scoreDiff) > 0.001) return scoreDiff
+    return (b.related_task_ids?.length || 0) - (a.related_task_ids?.length || 0)
+  })
 })
 
-const strengthTags = computed(() => {
-  try {
-    return profileData.value?.strength_tags ? JSON.parse(profileData.value.strength_tags) : []
-  } catch {
-    return []
+// Phase 4: 收藏集合(来自 dashboard.favorite_doc_ids)
+const favoriteIdSet = computed<Set<string>>(() => new Set(props.favoriteDocIds || []))
+
+function isFavorited(docId: string | undefined): boolean {
+  if (!docId) return false
+  return favoriteIdSet.value.has(docId)
+}
+
+function readStateLabel(rec: CareerDocRecommendation): string {
+  if (rec.read_state === 'completed') return '已读'
+  if (rec.read_state === 'in_progress') return '阅读中'
+  return '未读'
+}
+
+function readStateClass(rec: CareerDocRecommendation): string {
+  const state = rec.read_state
+  if (state === 'completed') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200'
   }
-})
-
-const gapTags = computed(() => {
-  try {
-    return profileData.value?.gap_tags ? JSON.parse(profileData.value.gap_tags) : []
-  } catch {
-    return []
+  if (state === 'in_progress') {
+    return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200'
   }
-})
+  return 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300'
+}
 
-const currentPlanId = computed(() => {
-  return props.currentPlan && typeof props.currentPlan === 'object' ? (props.currentPlan as unknown as CareerPlan).id : null
-})
+function openDoc(rec: CareerDocRecommendation) {
+  emit('open-doc', { docId: rec.doc_id, sectionIdx: rec.section_idx, reason: rec.reason || rec.section_heading || '' })
+}
+
+function toggleFavorite(docId: string | undefined) {
+  if (!docId) return
+  emit('toggle-favorite', docId)
+}
 </script>
 
 <script lang="ts">
@@ -47,60 +75,81 @@ export default {
 
 <template>
   <div class="space-y-6">
-    <section class="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-white/10 dark:bg-[#0C0F17]/90">
-      <div class="flex items-center gap-3">
-        <Target class="h-5 w-5 text-indigo-600" />
-        <h2 class="text-lg font-black text-slate-900 dark:text-white">能力画像</h2>
-      </div>
-      <div class="mt-4 space-y-4">
-        <div>
-          <p class="text-sm font-semibold text-slate-500 dark:text-slate-400">优势标签</p>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <span v-for="tag in strengthTags" :key="tag" class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200">{{ tag }}</span>
+    <!-- Phase 4: 资源闭环 → 推荐文档章节(基于 gap / skill / task_type 个性化) -->
+    <section
+      v-if="relevantDocs.length"
+      class="rounded-3xl border border-indigo-200/80 bg-indigo-50/40 p-5 shadow-sm dark:border-indigo-500/30 dark:bg-indigo-500/10"
+      data-testid="career-doc-recommendations"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-3">
+          <BookOpen class="h-5 w-5 text-indigo-600" />
+          <div>
+            <h2 class="text-lg font-black text-indigo-900 dark:text-indigo-200">推荐文档章节</h2>
+            <p class="text-[11px] text-indigo-700/80 dark:text-indigo-300/80">
+              基于你的 gap 与任务类型 · 共 {{ relevantDocs.length }} 条
+            </p>
           </div>
         </div>
-        <div>
-          <p class="text-sm font-semibold text-slate-500 dark:text-slate-400">差距标签</p>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <span v-for="tag in gapTags" :key="tag" class="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">{{ tag }}</span>
-          </div>
-        </div>
-        <p class="rounded-2xl bg-slate-50 p-4 text-sm leading-7 text-slate-600 dark:bg-white/5 dark:text-slate-300">
-          {{ profileData?.source_summary || '等待后端分析简历和面试历史。' }}
-        </p>
+        <span class="rounded-full border border-indigo-200 bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-200">
+          资源闭环
+        </span>
       </div>
-    </section>
 
-    <section class="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-white/10 dark:bg-[#0C0F17]/90">
-      <div class="flex items-center gap-3">
-        <FileText class="h-5 w-5 text-indigo-600" />
-        <h2 class="text-lg font-black text-slate-900 dark:text-white">资源建议</h2>
-      </div>
-      <div class="mt-4 space-y-3">
-        <article v-for="recommendation in recommendations" :key="recommendation.title" class="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/5">
-          <p class="text-xs font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300">{{ recommendation.type }}</p>
-          <h3 class="mt-2 text-sm font-bold text-slate-900 dark:text-white">{{ recommendation.title }}</h3>
-          <p class="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">{{ recommendation.reason }}</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-white/10 dark:bg-[#0C0F17]/90">
-      <div class="flex items-center gap-3">
-        <Sparkles class="h-5 w-5 text-indigo-600" />
-        <h2 class="text-lg font-black text-slate-900 dark:text-white">计划历史</h2>
-      </div>
-      <div class="mt-4 space-y-2">
-        <button
-          v-for="plan in plans.slice(0, 6)"
-          :key="plan.id"
-          @click="emit('select-plan', plan.id)"
-          class="w-full rounded-2xl border px-4 py-3 text-left transition"
-          :class="currentPlanId === plan.id ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10' : 'border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/5'"
+      <div class="mt-4 space-y-2.5">
+        <article
+          v-for="rec in relevantDocs.slice(0, 4)"
+          :key="`${rec.doc_id}-${rec.section_idx}`"
+          class="group rounded-2xl border border-white/70 bg-white/85 p-3 shadow-sm transition hover:border-indigo-300 hover:shadow-md dark:border-white/10 dark:bg-white/5"
         >
-          <p class="text-sm font-bold text-slate-900 dark:text-white">{{ plan.target_role }}</p>
-          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ plan.summary }}</p>
-        </button>
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="truncate text-sm font-bold text-slate-900 dark:text-white">{{ rec.section_heading }}</span>
+                <span
+                  class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="readStateClass(rec)"
+                >
+                  {{ readStateLabel(rec) }}
+                </span>
+              </div>
+              <p class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                {{ rec.doc_title }} · 匹配分 {{ (rec.score ?? 0).toFixed(2) }}
+              </p>
+            </div>
+            <button
+              @click.stop="toggleFavorite(rec.doc_id)"
+              class="shrink-0 rounded-full p-1 text-rose-500 transition hover:bg-rose-50 dark:hover:bg-rose-500/15"
+              :title="isFavorited(rec.doc_id) ? '取消收藏' : '收藏'"
+            >
+              <Star class="h-4 w-4" :class="isFavorited(rec.doc_id) ? 'fill-current' : ''" />
+            </button>
+          </div>
+
+          <p
+            v-if="rec.reason"
+            class="mt-1.5 line-clamp-2 text-[11px] leading-5 text-slate-600 dark:text-slate-300"
+          >
+            {{ rec.reason }}
+          </p>
+
+          <div class="mt-2 flex items-center justify-between gap-2">
+            <p
+              v-if="rec.related_task_ids && rec.related_task_ids.length"
+              class="truncate text-[10px] text-slate-400 dark:text-slate-500"
+            >
+              关联任务:{{ rec.related_task_ids.length }} 个
+            </p>
+            <span v-else class="text-[10px] text-slate-300 dark:text-slate-600">·</span>
+            <button
+              @click="openDoc(rec)"
+              class="inline-flex items-center gap-1 rounded-full bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm transition hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+            >
+              <ExternalLink class="h-3 w-3" />
+              打开章节
+            </button>
+          </div>
+        </article>
       </div>
     </section>
   </div>
