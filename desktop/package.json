@@ -14,12 +14,13 @@
     "dist:mac": "npm run build:frontend:mac && npm run build:backend:mac && bash ./scripts/package-app-macos.sh"
   },
   "devDependencies": {
-    "electron": "^37.2.6",
+    "electron": "37.2.6",
     "electron-builder": "^26.1.0"
   },
   "build": {
     "appId": "com.proview.desktop",
     "productName": "ProView AI Interviewer",
+    "electronVersion": "37.2.6",
     "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
     "asar": true,
     "compression": "normal",
@@ -29,6 +30,7 @@
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
+    "publish": null,
     "files": [
       "electron/**/*",
       {

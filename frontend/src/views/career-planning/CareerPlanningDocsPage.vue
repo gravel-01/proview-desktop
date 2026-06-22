@@ -2,16 +2,53 @@
 import { BookOpen, Clock3, Library } from 'lucide-vue-next'
 import CareerDocsPanel from '../../components/career-planning/CareerDocsPanel.vue'
 import { useCareerPlanningStore } from '../../stores/careerPlanning'
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 const store = useCareerPlanningStore()
+const route = useRoute()
+
+// Phase 4: 资源闭环 → 任务页跳转到指定 doc + section。
+// 通过 query.doc_id / query.section_idx 解析，并在 docs 加载完成后下钻。
+const pendingDocId = ref<string>('')
+const pendingSectionIdx = ref<number>(0)
+const pendingReason = ref<string>('')
 
 onMounted(() => {
   // 如果文档还没有加载，则加载
   if (!store.documents.length && !store.docsLoading) {
     store.loadDocs()
   }
+
+  // 解析路由 query：来自任务卡 / 资源推荐区
+  const docId = typeof route.query.doc_id === 'string' ? route.query.doc_id.trim() : ''
+  const sectionRaw = typeof route.query.section_idx === 'string' ? route.query.section_idx : '0'
+  const reason = typeof route.query.reason === 'string' ? route.query.reason : ''
+  const sectionIdx = Number.parseInt(sectionRaw, 10)
+  if (docId) {
+    pendingDocId.value = docId
+    pendingSectionIdx.value = Number.isFinite(sectionIdx) ? sectionIdx : 0
+    pendingReason.value = reason
+  }
 })
+
+// 文档加载完毕后，把下钻意图下发给 CareerDocsPanel
+function handleDocsLoaded() {
+  if (!pendingDocId.value) return
+  // 仅当下钻目标在当前文档集中时下发；否则保留在 pending，下一次加载后再生效
+  if (store.documents.some((d) => d.id === pendingDocId.value)) {
+    jumpToSectionRef.value?.(pendingDocId.value, pendingSectionIdx.value)
+    pendingDocId.value = ''
+    pendingReason.value = ''
+  }
+}
+
+const jumpToSectionRef = ref<((docId: string, sectionIdx: number) => void) | null>(null)
+
+function registerJumpToSection(fn: (docId: string, sectionIdx: number) => void) {
+  jumpToSectionRef.value = fn
+  handleDocsLoaded()
+}
 </script>
 
 <template>
@@ -22,6 +59,12 @@ onMounted(() => {
         <h2 class="ui-page-title mt-4 text-3xl">把职业规划资料集中到一个可检索的文档库</h2>
         <p class="ui-page-subtitle mt-3 max-w-2xl text-sm leading-7">
           从求职指南到 AI 面试技巧，再到职业发展路径，这里把学习内容集中成统一的资料面板，方便查阅和回看。
+        </p>
+        <p
+          v-if="pendingReason"
+          class="career-docs-page__hint mt-3 inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-200"
+        >
+          🎯 来自任务推荐：{{ pendingReason }}
         </p>
       </div>
 
@@ -58,11 +101,12 @@ onMounted(() => {
       </div>
     </div>
 
-    <CareerDocsPanel 
-      :documents="store.documents" 
-      :loading="store.docsLoading" 
-      :error="store.docsError" 
+    <CareerDocsPanel
+      :documents="store.documents"
+      :loading="store.docsLoading"
+      :error="store.docsError"
       @retry="store.loadDocs({ force: true })"
+      @register-jump="registerJumpToSection"
     />
   </section>
 </template>
