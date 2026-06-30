@@ -7,7 +7,6 @@ import {
   ChevronRight,
   Cpu,
   FileCheck,
-  LayoutGrid,
   Layers3,
   Loader,
   Play,
@@ -23,6 +22,7 @@ import CustomSelect from '../components/CustomSelect.vue'
 import JobTagPicker from '../components/JobTagPicker.vue'
 import StageDeck from '../components/StageDeck.vue'
 import { fetchLatestResume, ttsPreview } from '../services/interview'
+import { primeVoicePlayback } from '../composables/useVoice'
 import { isReusableOcrText } from '../utils/ocr'
 import { RESUME_UPLOAD_ACCEPT, RESUME_UPLOAD_HINT } from '../utils/resumeFile'
 
@@ -93,6 +93,7 @@ const modelOptions = [
   { value: 'deepseek', label: 'DeepSeek', desc: '深度求索，代码能力强', emoji: '🧠' },
   { value: 'ernie', label: '文心一言', desc: '百度大模型，中文理解优秀', emoji: '🌐' },
   { value: 'ernie-thinking', label: '文心（深度思考）', desc: '开启思维链，回复更慢但更深入', emoji: '🔮' },
+  { value: 'internal-ernie', label: '内测大模型（未开放）', desc: '仅本地内测地址配置后可用', emoji: '🔒' },
 ] as const
 
 const interviewPresets: ArrangementPreset[] = [
@@ -471,6 +472,11 @@ async function startInterview() {
 
   stopPreview()
   try {
+    try {
+      await primeVoicePlayback()
+    } catch (error) {
+      console.warn('语音播放预激活失败，进入面试后仍可手动触发语音:', error)
+    }
     await store.startInterview()
     launchConfigOpen.value = false
     router.push('/interview')
@@ -556,14 +562,6 @@ onBeforeUnmount(() => {
           </div>
           <div class="setup-section__actions">
             <span class="setup-section__hint hidden md:inline-block">轮次、难度和面试风格共同决定提问节奏与压迫感。</span>
-            <button
-              type="button"
-              class="setup-section__toggle"
-              @click="arrangementGridExpanded = !arrangementGridExpanded"
-            >
-              <LayoutGrid class="h-3.5 w-3.5" />
-              <span>{{ arrangementGridExpanded ? '收起场景' : '展开全部场景' }}</span>
-            </button>
           </div>
         </div>
 

@@ -26,9 +26,13 @@ def init_providers(
     deepseek_base_url: str = "https://api.deepseek.com/v1",
     ernie_api_key: str = "",
     ernie_base_url: str = "https://aistudio.baidu.com/llm/lmapi/v3",
+    internal_ernie_base_url: str = "",
+    internal_ernie_model: str = "ERNIE-4.5-21B-A3B",
 ):
     """根据环境变量初始化所有提供商，应在 app 启动时调用一次。"""
     global _providers
+    internal_ernie_base_url = (internal_ernie_base_url or "").strip()
+    internal_ernie_model = (internal_ernie_model or "").strip() or "ERNIE-4.5-21B-A3B"
     _providers = {
         "deepseek": ModelProvider(
             key="deepseek",
@@ -41,7 +45,7 @@ def init_providers(
         "ernie": ModelProvider(
             key="ernie",
             label="文心一言",
-            model="ERNIE-4.5-21B-A3B",
+            model="ernie-4.5-turbo-128k",
             api_key=ernie_api_key or "",
             base_url=ernie_base_url,
             available=bool(ernie_api_key),
@@ -53,6 +57,14 @@ def init_providers(
             api_key=ernie_api_key or "",
             base_url=ernie_base_url,
             available=bool(ernie_api_key),
+        ),
+        "internal-ernie": ModelProvider(
+            key="internal-ernie",
+            label="内测大模型（未开放）",
+            model=internal_ernie_model,
+            api_key="internal",
+            base_url=internal_ernie_base_url,
+            available=bool(internal_ernie_base_url),
         ),
     }
 
@@ -76,7 +88,7 @@ def get_default_provider() -> ModelProvider:
             return p
     # 全部不可用时返回 ernie（会在 Agent 层降级为 mock）
     return _providers.get("ernie", ModelProvider(
-        key="ernie", label="文心一言", model="ERNIE-4.5-21B-A3B",
+        key="ernie", label="文心一言", model="ernie-4.5-turbo-128k",
         api_key="", base_url="https://aistudio.baidu.com/llm/lmapi/v3", available=False
     ))
 

@@ -325,10 +325,6 @@ function getNavItemClass(item: { name: string; disabled?: boolean }, activeClass
   return idleClass
 }
 
-function handleThemeToggle(e: MouseEvent) {
-  theme.toggle(e.currentTarget as HTMLElement)
-}
-
 function setThemeMode(mode: 'light' | 'dark', e: MouseEvent) {
   const wantsDark = mode === 'dark'
   if (theme.isDark === wantsDark) return
@@ -1086,6 +1082,17 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+        <div v-if="!isSidebarCollapsed" class="app-sidebar-powered">
+          <div class="app-powered-by-badge app-powered-by-badge--sidebar pointer-events-none">
+            <span class="app-powered-by-badge__chip">
+              <Sparkles class="h-4 w-4" />
+            </span>
+            <span class="app-powered-by-badge__text">
+              <span class="app-powered-by-badge__label">Powered by</span>
+              <span class="app-powered-by-badge__value">ERNIE · PaddleOCR · ROCm</span>
+            </span>
+          </div>
+        </div>
         <div v-if="isDesktop && !isSidebarCollapsed" class="app-sidebar-zoom">
           <span class="app-sidebar-theme__label">界面缩放</span>
           <div class="app-sidebar-zoom__actions">
@@ -1193,35 +1200,7 @@ onBeforeUnmount(() => {
     >
       <BlobBackground v-if="!shouldUseCleanMain" />
       <div class="relative z-10 min-h-full">
-        <div v-if="!isGuestPage" class="pointer-events-none absolute right-4 top-4 z-20 flex flex-col items-end gap-2 sm:gap-3">
-          <div class="app-powered-by-badge pointer-events-none">
-            <span class="app-powered-by-badge__chip">
-              <Sparkles class="h-4 w-4" />
-            </span>
-            <span class="app-powered-by-badge__text">
-              <span class="app-powered-by-badge__label">Powered by</span>
-              <span class="app-powered-by-badge__value">ERINE + PaddleOCR + ROCm</span>
-            </span>
-          </div>
-          <div class="pointer-events-none flex items-center gap-2 sm:gap-3">
-          <button
-            type="button"
-            class="app-theme-switch pointer-events-auto"
-            :class="{ 'app-theme-switch--dark': theme.isDark }"
-            :title="theme.isDark ? '切换到浅色模式' : '切换到深色模式'"
-            :aria-pressed="theme.isDark"
-            @click="handleThemeToggle"
-          >
-            <span class="app-theme-switch__label hidden sm:inline">{{ theme.isDark ? '深色' : '浅色' }}</span>
-            <span class="app-theme-switch__track">
-              <Sun class="app-theme-switch__track-icon app-theme-switch__track-icon--sun h-3.5 w-3.5" />
-              <Moon class="app-theme-switch__track-icon app-theme-switch__track-icon--moon h-3.5 w-3.5" />
-              <span class="app-theme-switch__thumb">
-                <Moon v-if="theme.isDark" class="h-3.5 w-3.5" />
-                <Sun v-else class="h-3.5 w-3.5" />
-              </span>
-            </span>
-          </button>
+        <div v-if="!isGuestPage" class="pointer-events-none absolute right-4 top-4 z-20 flex items-end md:hidden">
           <button
             type="button"
             class="app-top-chip pointer-events-auto inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold md:hidden"
@@ -1231,7 +1210,6 @@ onBeforeUnmount(() => {
             <Settings class="h-4 w-4" />
             <span class="hidden sm:inline">应用设置</span>
           </button>
-          </div>
         </div>
         <div
           class="container mx-auto max-w-7xl px-4 sm:px-8"
@@ -1293,16 +1271,15 @@ onBeforeUnmount(() => {
 .app-powered-by-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.66rem 0.95rem 0.66rem 0.82rem;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.38rem 0.78rem 0.38rem 0.44rem;
   border-radius: 9999px;
-  border: 1px solid rgba(255, 180, 214, 0.65);
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 248, 251, 0.84)) padding-box,
-    linear-gradient(135deg, rgba(255, 118, 188, 0.95), rgba(124, 195, 255, 0.95), rgba(255, 206, 110, 0.9)) border-box;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  background: rgba(255, 255, 255, 0.72);
   box-shadow:
-    0 14px 28px rgba(255, 147, 192, 0.16),
-    0 2px 8px rgba(255, 255, 255, 0.78) inset;
+    0 10px 24px rgba(37, 99, 235, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.82) inset;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   white-space: nowrap;
@@ -1312,52 +1289,92 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.85rem;
-  height: 1.85rem;
+  width: 1.45rem;
+  height: 1.45rem;
   border-radius: 9999px;
-  background: linear-gradient(135deg, rgba(255, 115, 185, 0.96), rgba(125, 194, 255, 0.96));
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.92), rgba(79, 70, 229, 0.86));
   color: white;
-  box-shadow: 0 8px 18px rgba(255, 128, 183, 0.24);
+  box-shadow: 0 8px 16px rgba(37, 99, 235, 0.18);
   flex: none;
 }
 
 .app-powered-by-badge__text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.05;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  line-height: 1;
+  min-width: 0;
 }
 
 .app-powered-by-badge__label {
-  font-size: 0.62rem;
+  font-size: 0.64rem;
   font-weight: 900;
-  letter-spacing: 0.34em;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
-  color: rgba(113, 88, 121, 0.78);
+  color: #71809c;
 }
 
 .app-powered-by-badge__value {
-  font-size: 0.93rem;
+  font-size: 0.78rem;
   font-weight: 800;
-  letter-spacing: 0.01em;
-  color: var(--ui-text-primary);
+  letter-spacing: 0;
+  color: #1d4ed8;
 }
 
 :global(.dark) .app-powered-by-badge {
-  border-color: rgba(255, 168, 208, 0.34);
-  background:
-    linear-gradient(135deg, rgba(18, 21, 31, 0.88), rgba(30, 34, 48, 0.84)) padding-box,
-    linear-gradient(135deg, rgba(255, 123, 188, 0.92), rgba(118, 197, 255, 0.92), rgba(255, 198, 105, 0.84)) border-box;
+  border-color: rgba(147, 197, 253, 0.18);
+  background: rgba(15, 23, 42, 0.58);
   box-shadow:
-    0 16px 32px rgba(0, 0, 0, 0.22),
+    0 12px 26px rgba(0, 0, 0, 0.22),
     0 1px 0 rgba(255, 255, 255, 0.06) inset;
 }
 
 :global(.dark) .app-powered-by-badge__label {
-  color: rgba(249, 241, 249, 0.92);
+  color: rgba(203, 213, 225, 0.76);
 }
 
 :global(.dark) .app-powered-by-badge__value {
-  color: #f6f4ff;
+  color: #dbeafe;
+}
+
+.app-sidebar-powered {
+  margin-top: 0.75rem;
+}
+
+.app-powered-by-badge--sidebar {
+  width: 100%;
+  align-items: flex-start;
+  border-color: var(--sidebar-border);
+  border-radius: 1rem;
+  background: var(--ui-surface-2);
+  padding: 0.55rem 0.65rem;
+  box-shadow: var(--ui-shadow-sm);
+  white-space: normal;
+}
+
+.app-powered-by-badge--sidebar .app-powered-by-badge__chip {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.app-powered-by-badge--sidebar .app-powered-by-badge__text {
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.22rem;
+  padding-top: 0.1rem;
+}
+
+.app-powered-by-badge--sidebar .app-powered-by-badge__label {
+  font-size: 0.58rem;
+}
+
+.app-powered-by-badge--sidebar .app-powered-by-badge__value {
+  max-width: 100%;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .app-sidebar {

@@ -18,7 +18,8 @@ import config as app_config
 from config import (
     UPLOAD_FOLDER, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
     SECRET_KEY, CORS_ORIGINS, BAIDU_APP_KEY, BAIDU_SECRET_KEY,
-    ERNIE_API_KEY, ERNIE_BASE_URL, RAG_DB_PATH, PDF_OUTPUT_DIR
+    ERNIE_API_KEY, ERNIE_BASE_URL, INTERNAL_ERNIE_BASE_URL,
+    INTERNAL_ERNIE_MODEL, RAG_DB_PATH, PDF_OUTPUT_DIR
 )
 from auth import create_token, require_session, revoke_session
 from core.model_registry import init_providers, get_provider, get_default_provider, list_available_providers
@@ -32,6 +33,7 @@ from services.resume_text_extraction import (
     unwrap_resume_text,
 )
 from services.career_planning_service import CareerPlanningService
+from services.career_planning_llm import CareerPlanLLMGenerator
 from services.career_planning_docs import CareerPlanningDocumentRepository
 from services.interview_turn_service import InterviewTurnService
 from utils.safe_log import configure_stdio, safe_log
@@ -64,6 +66,7 @@ app.register_blueprint(learning_bp)
 def _reload_runtime_config_state() -> dict:
     global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
     global ERNIE_API_KEY, ERNIE_BASE_URL
+    global INTERNAL_ERNIE_BASE_URL, INTERNAL_ERNIE_MODEL
     global BAIDU_APP_KEY, BAIDU_SECRET_KEY
 
     snapshot = app_config.reload_runtime_settings()
@@ -72,6 +75,8 @@ def _reload_runtime_config_state() -> dict:
     DEEPSEEK_BASE_URL = app_config.DEEPSEEK_BASE_URL
     ERNIE_API_KEY = app_config.ERNIE_API_KEY
     ERNIE_BASE_URL = app_config.ERNIE_BASE_URL
+    INTERNAL_ERNIE_BASE_URL = app_config.INTERNAL_ERNIE_BASE_URL
+    INTERNAL_ERNIE_MODEL = app_config.INTERNAL_ERNIE_MODEL
     BAIDU_APP_KEY = app_config.BAIDU_APP_KEY
     BAIDU_SECRET_KEY = app_config.BAIDU_SECRET_KEY
 
@@ -80,6 +85,8 @@ def _reload_runtime_config_state() -> dict:
         deepseek_base_url=DEEPSEEK_BASE_URL,
         ernie_api_key=ERNIE_API_KEY,
         ernie_base_url=ERNIE_BASE_URL,
+        internal_ernie_base_url=INTERNAL_ERNIE_BASE_URL,
+        internal_ernie_model=INTERNAL_ERNIE_MODEL,
     )
     return snapshot
 
@@ -246,6 +253,29 @@ def _extract_resume_payload(file_path: str, *, include_images: bool = False) -> 
         ocr_full_loader=perform_ocr_full if OCR_AVAILABLE else None,
         use_preprocessing=True,
     )
+
+
+def _compact_log_text(value: object, limit: int = 700) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " | ").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _log_resume_extraction_failure(context: str, file_path: str, extraction: dict) -> None:
+    print(
+        "[RESUME][ERROR] "
+        f"{context} extraction failed "
+        f"mode={extraction.get('mode') or 'unknown'} "
+        f"source={extraction.get('source_label') or 'unknown'} "
+        f"file={os.path.basename(str(file_path or '')) or 'unknown'} "
+        f"message={_compact_log_text(extraction.get('error_message'))}"
+    )
+
+
+def _resume_extraction_failure_message(extraction: dict) -> str:
+    message = str(extraction.get("error_message") or "简历内容提取失败，请重新上传。").strip()
+    return f"简历解析失败: {message}"
 
 
 MIN_RESUME_TEXT_LENGTH = 50
@@ -481,7 +511,33 @@ try:
     else:
         print(f"[storage] unavailable: {_storage.get('db_error')}")
     try:
-        career_planning_service = CareerPlanningService(data_client)
+        # Phase 3: build a typed LLM generator backed by the default
+        # registered provider (so the structured-generation path is
+        # available out of the box; when no provider is configured the
+        # generator becomes a no-op and the service stays on the
+        # evidence-aware fallback).
+        try:
+            _llm_provider = get_default_provider()
+        except Exception:
+            _llm_provider = None
+        _llm_generator = (
+            CareerPlanLLMGenerator(model_provider=_llm_provider)
+            if _llm_provider is not None
+            else None
+        )
+        career_planning_service = CareerPlanningService(
+            data_client,
+            llm_generator=_llm_generator,
+        )
+        # Wire memory bus + skill registry so the LLM can record eval logs.
+        try:
+            _memory_bus = career_planning_service.memory_bus()
+            if _llm_generator is not None:
+                _llm_generator._memory_bus = _memory_bus
+                # Lazily resolve the registry and register LLM skills.
+                career_planning_service.skill_registry()
+        except Exception as mem_exc:
+            print(f"[career] memory bus setup failed: {mem_exc}")
         print(f"[career] schema ready: {career_planning_service.health()}")
     except Exception as career_error:
         career_planning_service = None
@@ -554,6 +610,29 @@ CONTEXT_CHECKPOINT_FIELD_LIMITS = {
     "risk_signals": (6, 140),
     "open_threads": (6, 140),
 }
+
+
+def _model_provider_unavailable_message(provider) -> str:
+    label = getattr(provider, "label", "") or getattr(provider, "key", "") or "所选模型"
+    key = getattr(provider, "key", "")
+    if key == "internal-ernie":
+        return "内测大模型（未开放）未配置或未开放，请先在应用设置的大模型区域填写本地内测地址。"
+    return f"{label} 未配置或不可用，请先在应用设置的大模型区域补全配置。"
+
+
+def _resolve_requested_model_provider(model_provider: str):
+    requested = str(model_provider or "").strip()
+    if not requested:
+        return get_default_provider(), ""
+
+    provider = get_provider(requested)
+    if not provider:
+        return None, f"未知模型 provider：{requested}"
+    if not provider.available:
+        if provider.key != "internal-ernie":
+            return get_default_provider(), ""
+        return None, _model_provider_unavailable_message(provider)
+    return provider, ""
 
 # Per-session 评估观察者
 try:
@@ -2694,6 +2773,269 @@ def get_career_doc(doc_id):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: resource-closure endpoints (docs → tasks → user behaviour)
+# ---------------------------------------------------------------------------
+
+def _parse_int_arg(name: str, default: int, *, minimum: int = 0, maximum: int = 1_000_000) -> int:
+    raw = request.args.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(float(raw))
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _parse_float_arg(name: str, default: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    raw = request.args.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+@app.route('/api/career/docs/sections', methods=['GET'])
+def get_career_doc_sections():
+    """Return the flat list of doc sections with their structured taxonomy.
+
+    Phase 4 endpoint used by the docs page to render the catalogue and
+    by the recommender client. No auth (matches the existing
+    ``/api/career/docs`` surface); sections carry no PII.
+    """
+    if not STORAGE_AVAILABLE or not data_client:
+        return jsonify({"status": "error", "message": "数据服务不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        sections = career_planning_docs.list_sections_with_tags()
+        # Optional filtering by doc_id keeps the response small for callers
+        # that only care about a single document.
+        doc_id = request.args.get("doc_id")
+        if doc_id:
+            sections = [s for s in sections if s.get("doc_id") == doc_id]
+        return jsonify({"status": "success", "data": {"sections": sections}})
+    except Exception as e:
+        print(f"[API] get_career_doc_sections failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/recommend', methods=['GET'])
+def get_career_doc_recommendations():
+    """Return the top-N section-level recommendations for the active plan.
+
+    Query parameters
+    ----------------
+    - ``plan_id`` (optional) — pin to a specific plan; default = active plan.
+    - ``limit`` (optional) — number of sections to return (default 4, max 12).
+    - ``score_threshold`` (optional) — drop sections below this score
+      (default 0.3, range 0.0–1.0).
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    plan_id = _parse_int_arg("plan_id", 0, minimum=0, maximum=10_000_000)
+    limit = _parse_int_arg("limit", 4, minimum=1, maximum=12)
+    score_threshold = _parse_float_arg("score_threshold", 0.3, minimum=0.0, maximum=1.0)
+
+    try:
+        recs = career_planning_service._recommend_for_plan(
+            user_id=int(user_id),
+            plan_id=int(plan_id) if plan_id > 0 else None,
+            limit=int(limit),
+            score_threshold=float(score_threshold),
+        )
+        return jsonify({"status": "success", "data": {"recommendations": recs}})
+    except Exception as e:
+        print(f"[API] get_career_doc_recommendations failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/progress', methods=['POST'])
+def post_career_doc_progress(doc_id):
+    """Persist a reading event; optionally advance the linked task's progress.
+
+    Body
+    ----
+    - ``section_idx`` (int, required)
+    - ``read_seconds`` (int, default 0)
+    - ``completed`` (bool, default false)
+    - ``task_id`` (int, optional) — when set + ``completed=true`` the task
+      is advanced by ~10% (capped at 100%) and a progress log is written.
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        section_idx = int(payload.get("section_idx") or 0)
+    except Exception:
+        section_idx = 0
+    if section_idx < 0:
+        section_idx = 0
+    read_seconds = max(0, int(payload.get("read_seconds") or 0))
+    completed = bool(payload.get("completed") or False)
+    task_id_raw = payload.get("task_id")
+    task_id: int | None = None
+    if task_id_raw not in (None, "", 0):
+        try:
+            task_id = int(task_id_raw)
+        except Exception:
+            task_id = None
+
+    try:
+        result = career_planning_service.mark_doc_read(
+            user_id=int(user_id),
+            doc_id=str(doc_id),
+            section_idx=section_idx,
+            read_seconds=read_seconds,
+            completed=completed,
+            task_id=task_id,
+        )
+        return jsonify({"status": "success", "data": result})
+    except Exception as e:
+        print(f"[API] post_career_doc_progress failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/progress', methods=['GET'])
+def get_career_doc_progress(doc_id):
+    """Return the aggregated read state for a single document."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        state = career_planning_service.get_doc_read_state(int(user_id), str(doc_id))
+        return jsonify({"status": "success", "data": {"doc_id": doc_id, **state}})
+    except Exception as e:
+        print(f"[API] get_career_doc_progress failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/<doc_id>/favorite', methods=['POST'])
+def post_career_doc_favorite(doc_id):
+    """Toggle the favourite flag for a document. Idempotent."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        favorited = career_planning_service.toggle_doc_favorite(int(user_id), str(doc_id))
+        return jsonify({"status": "success", "data": {"doc_id": doc_id, "favorited": bool(favorited)}})
+    except Exception as e:
+        print(f"[API] post_career_doc_favorite failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/docs/favorites', methods=['GET'])
+def list_career_doc_favorites():
+    """Return all favourite doc ids for the current user."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        ids = career_planning_service.list_favorite_docs(int(user_id))
+        return jsonify({"status": "success", "data": {"doc_ids": ids}})
+    except Exception as e:
+        print(f"[API] list_career_doc_favorites failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/tasks/<int:task_id>/link-docs', methods=['POST'])
+def link_career_task_doc(task_id):
+    """Manually link a doc section to a task. Idempotent."""
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    doc_id = str(payload.get("doc_id") or "").strip()
+    if not doc_id:
+        return jsonify({"status": "error", "message": "doc_id is required"}), 400
+    try:
+        section_idx = int(payload.get("section_idx") or 0)
+    except Exception:
+        section_idx = 0
+    reason = str(payload.get("reason") or "")
+
+    try:
+        result = career_planning_service.link_task_to_doc(
+            user_id=int(user_id),
+            task_id=int(task_id),
+            doc_id=doc_id,
+            section_idx=section_idx,
+            reason=reason,
+        )
+        return jsonify({"status": "success", "data": result})
+    except PermissionError as e:
+        return jsonify({"status": "error", "message": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        print(f"[API] link_career_task_doc failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/career/tasks/<int:task_id>/docs', methods=['GET'])
+def list_career_task_docs(task_id):
+    """Return all doc sections linked to a task (by id, regardless of user).
+
+    The endpoint does not enforce ownership at this layer because the
+    underlying :func:`list_task_resource_refs` query is already
+    constrained to the user's plan via the :class:`MemoryBus` wrapper.
+    """
+    if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
+        return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
+
+    user_id = _get_current_user_id_from_auth_header()
+    if user_id is None:
+        return jsonify({"status": "error", "message": "本机用户不可用"}), 401
+
+    try:
+        refs = career_planning_service.list_task_resource_refs(int(task_id))
+        out = [
+            {
+                "doc_id": r.get("doc_id"),
+                "section_idx": int(r.get("section_idx") or 0),
+                "reason": r.get("reason") or "",
+            }
+            for r in refs
+        ]
+        return jsonify({"status": "success", "data": {"task_id": int(task_id), "docs": out}})
+    except Exception as e:
+        print(f"[API] list_career_task_docs failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/career/plans', methods=['GET'])
 def list_career_plans():
     if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
@@ -2827,6 +3169,9 @@ def setup_interview():
     prepared_resume = None
 
     current_user_id = _get_current_user_id_from_auth_header()
+    selected_provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
 
     if 'resume' in request.files:
         file = request.files['resume']
@@ -2836,7 +3181,8 @@ def setup_interview():
                 filename, file_path = _save_uploaded_resume(file)
                 prepared_resume = _extract_resume_payload(file_path)
                 if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
+                    _log_resume_extraction_failure("interview.setup", file_path, prepared_resume)
+                    message = _resume_extraction_failure_message(prepared_resume)
                     _cleanup_local_resume_file(file_path)
                     return jsonify({"status": "error", "message": message}), 400
             except ResumeOcrUnavailableError as exc:
@@ -2870,7 +3216,7 @@ def setup_interview():
             user_id=current_user_id,
         )
 
-    agent = get_agent(session_id, model_provider=model_provider)
+    agent = get_agent(session_id, model_provider=selected_provider.key if selected_provider else model_provider)
     _register_session_trace_context(
         session_id=session_id,
         user_id=current_user_id,
@@ -3168,6 +3514,9 @@ def setup_interview_stream():
     prepared_resume = None
 
     current_user_id = _get_current_user_id_from_auth_header()
+    selected_provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
 
     if 'resume' in request.files:
         file = request.files['resume']
@@ -3177,7 +3526,8 @@ def setup_interview_stream():
                 filename, file_path = _save_uploaded_resume(file)
                 prepared_resume = _extract_resume_payload(file_path)
                 if not prepared_resume["success"]:
-                    message = prepared_resume["error_message"] or "简历内容提取失败，请重新上传。"
+                    _log_resume_extraction_failure("interview.setup_stream", file_path, prepared_resume)
+                    message = _resume_extraction_failure_message(prepared_resume)
                     _cleanup_local_resume_file(file_path)
                     return jsonify({"status": "error", "message": message}), 400
             except ResumeOcrUnavailableError as exc:
@@ -3209,7 +3559,7 @@ def setup_interview_stream():
             user_id=current_user_id,
         )
 
-    agent = get_agent(session_id, model_provider=model_provider)
+    agent = get_agent(session_id, model_provider=selected_provider.key if selected_provider else model_provider)
     _register_session_trace_context(
         session_id=session_id,
         user_id=current_user_id,
@@ -4618,6 +4968,49 @@ def _merge_job_title_with_report_context(job_title: str, report_context: dict | 
     return f"{merged_job_title}\n" + "\n".join(summary_bits)
 
 
+@app.route('/api/resume/parse', methods=['POST'])
+def parse_resume_for_builder():
+    """将上传简历解析为简历生成器使用的结构化数据。"""
+    if not ANALYZER_AVAILABLE:
+        return jsonify({"status": "error", "message": "简历分析模块不可用"}), 503
+
+    if 'file' not in request.files:
+        return jsonify({"status": "error", "message": "未上传文件"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "文件名为空"}), 400
+
+    try:
+        _, file_path = _save_uploaded_resume(file)
+        extraction = _extract_resume_payload(file_path, include_images=False)
+        if not extraction["success"]:
+            message = extraction["error_message"] or "简历内容提取失败"
+            return jsonify({"status": "error", "message": message}), 400
+
+        resume_text = extraction["text"]
+        if not _has_usable_resume_text(resume_text):
+            return jsonify({
+                "status": "error",
+                "message": "简历内容提取失败或内容过少，请确保文件清晰可读"
+            }), 400
+
+        analyzer = ResumeAnalyzer(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        builder_data = analyzer._extract_builder_data(resume_text)
+        return jsonify({
+            "status": "success",
+            "data": builder_data,
+            "raw_text": resume_text[:3000],
+        })
+    except ResumeOcrUnavailableError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 503
+    except ResumeExtractionError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/resume/analyze-stream', methods=['POST'])
 def analyze_resume_stream():
     """流式简历分析：通过 SSE 实时输出 LLM 思考过程。
@@ -4633,6 +5026,7 @@ def analyze_resume_stream():
         data = request.json or {}
         ocr_text = data.get('ocr_text', '')
         job_title = data.get('job_title', '')
+        model_provider = data.get('model_provider', '')
         report_context = _parse_report_context(data.get('report_context'))
         if not ocr_text:
             return jsonify({"status": "error", "message": "ocr_text 不能为空"}), 400
@@ -4644,6 +5038,7 @@ def analyze_resume_stream():
         if file.filename == '':
             return jsonify({"status": "error", "message": "文件名为空"}), 400
         job_title = request.form.get('job_title', '')
+        model_provider = request.form.get('model_provider', '')
         report_context = _parse_report_context(request.form.get('report_context'))
         try:
             _, file_path = _save_uploaded_resume(file)
@@ -4651,7 +5046,8 @@ def analyze_resume_stream():
             ocr_text = extraction["text"] if extraction["success"] else extraction["error_message"]
             ocr_images = extraction["images"]
             if not extraction["success"]:
-                return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
+                _log_resume_extraction_failure("resume.analyze_stream", file_path, extraction)
+                return jsonify({"status": "error", "message": _resume_extraction_failure_message(extraction)}), 400
         except ResumeOcrUnavailableError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 503
         except ResumeExtractionError as exc:
@@ -4660,7 +5056,9 @@ def analyze_resume_stream():
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # 获取模型配置
-    provider = get_default_provider()
+    provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
     _is_json = request.is_json  # 在请求上下文内捕获，generator 内不能访问 request
 
     def generate():
@@ -4721,7 +5119,7 @@ _resume_sessions: dict[str, dict] = {}
 
 @app.route('/api/resume/analyze', methods=['POST'])
 def analyze_resume():
-    """上传简历，提取文本并执行 DeepSeek 分析，返回结构化建议。
+    """上传简历，提取文本并执行模型分析，返回结构化建议。
     支持两种模式：
     1. FormData 上传文件 → 自动提取文本（OCR / 直读）+ 分析
     2. JSON body { ocr_text, job_title } → 跳过文件解析，直接分析（复用面试 OCR 结果）
@@ -4734,14 +5132,19 @@ def analyze_resume():
         data = request.json or {}
         ocr_text = data.get('ocr_text', '')
         job_title = data.get('job_title', '')
+        model_provider = data.get('model_provider', '')
         report_context = _parse_report_context(data.get('report_context'))
         if not ocr_text:
             return jsonify({"status": "error", "message": "ocr_text 不能为空"}), 400
+        provider, model_error = _resolve_requested_model_provider(model_provider)
+        if model_error:
+            return jsonify({"status": "error", "message": model_error}), 400
 
         try:
             analyzer = ResumeAnalyzer(
-                api_key=DEEPSEEK_API_KEY,
-                base_url=DEEPSEEK_BASE_URL
+                api_key=provider.api_key,
+                base_url=provider.base_url,
+                model=provider.model,
             )
             analysis_job_title = _merge_job_title_with_report_context(job_title, report_context)
             result = analyzer.analyze(ocr_text=ocr_text, job_title=analysis_job_title, report_context=report_context)
@@ -4776,7 +5179,11 @@ def analyze_resume():
         return jsonify({"status": "error", "message": "文件名为空"}), 400
 
     job_title = request.form.get('job_title', '')
+    model_provider = request.form.get('model_provider', '')
     report_context = _parse_report_context(request.form.get('report_context'))
+    provider, model_error = _resolve_requested_model_provider(model_provider)
+    if model_error:
+        return jsonify({"status": "error", "message": model_error}), 400
     try:
         # 1. 提取简历文本（OCR / 直读自动选择）
         _, file_path = _save_uploaded_resume(file)
@@ -4785,12 +5192,14 @@ def analyze_resume():
         ocr_images = extraction["images"]
 
         if not extraction["success"]:
-            return jsonify({"status": "error", "message": f"简历解析失败: {extraction['error_message']}"}), 400
+            _log_resume_extraction_failure("resume.analyze", file_path, extraction)
+            return jsonify({"status": "error", "message": _resume_extraction_failure_message(extraction)}), 400
 
-        # 2. DeepSeek 分析
+        # 2. 模型分析
         analyzer = ResumeAnalyzer(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_BASE_URL
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            model=provider.model,
         )
         analysis_job_title = _merge_job_title_with_report_context(job_title, report_context)
         result = analyzer.analyze(ocr_text=ocr_result, job_title=analysis_job_title, report_context=report_context)
@@ -4911,11 +5320,16 @@ def polish_resume_builder():
 - "id": 唯一标识，格式 "sug_001", "sug_002" 等
 - "moduleId": 对应模块的 id
 - "entryId": 如果是时间线条目，提供 entry 的 id；否则为 null
-- "fieldPath": 字段路径，如 "detail"、"content" 等
-- "originalText": 原始文本片段（不超过 200 字）
+- "fieldPath": 只能是 "detail" 或 "content"
+- "originalText": 原始文本片段（不超过 200 字，必须能在对应 detail/content 中逐字找到）
 - "suggestedText": 优化后的文本
 - "reason": 优化理由（简洁说明，不超过 50 字）
 - "status": 固定为 "pending"
+
+限制：
+- 时间线条目只能优化 entry 的 "detail" 字段，不能修改 orgName、role、timeStart、timeEnd、isCurrent 等结构字段
+- 普通文本模块只能优化 "content" 字段
+- 不要对 tags、skillBars、intention 等结构化字段生成建议
 
 请严格输出 JSON 数组，不要输出任何其他内容。不要用 markdown 代码块包裹。
 如果某个模块没有明显可优化的地方，就不要为它生成建议。
@@ -4932,6 +5346,7 @@ def polish_resume_builder():
         # 调用 LLM
         raw_response = analyzer.client.generate(messages)
         suggestions = analyzer._parse_json_array(raw_response, fallback_id_prefix="sug")
+        suggestions = analyzer.validate_builder_polish_suggestions(suggestions, modules)
 
         return jsonify({
             "status": "success",
@@ -5084,11 +5499,53 @@ def speech_to_text(session_id):
     rate = int(request.form.get('rate', '16000'))
 
     try:
-        text = _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+        text = _speech_to_text_with_chunking(audio_data, fmt=fmt, rate=rate)
         return jsonify({"status": "success", "text": text})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+STT_PCM_CHUNK_SECONDS = 45
+PCM_SAMPLE_WIDTH_BYTES = 2
+
+
+def _split_pcm_audio(audio_data: bytes, *, rate: int, max_seconds: int = STT_PCM_CHUNK_SECONDS) -> list[bytes]:
+    bytes_per_second = max(1, int(rate)) * PCM_SAMPLE_WIDTH_BYTES
+    max_chunk_bytes = max(1, bytes_per_second * max_seconds)
+    max_chunk_bytes -= max_chunk_bytes % PCM_SAMPLE_WIDTH_BYTES
+    if max_chunk_bytes <= 0 or len(audio_data) <= max_chunk_bytes:
+        return [audio_data]
+
+    chunks: list[bytes] = []
+    for start in range(0, len(audio_data), max_chunk_bytes):
+        chunk = audio_data[start:start + max_chunk_bytes]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _speech_to_text_with_chunking(audio_data: bytes, *, fmt: str = "pcm", rate: int = 16000) -> str:
+    normalized_fmt = str(fmt or "pcm").strip().lower()
+    if normalized_fmt != "pcm":
+        return _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+
+    chunks = _split_pcm_audio(audio_data, rate=rate)
+    if len(chunks) <= 1:
+        return _speech_client.speech_to_text(audio_data, fmt=fmt, rate=rate)
+
+    print(
+        f"[STT] PCM audio exceeds short-ASR safe size, "
+        f"splitting into {len(chunks)} chunks "
+        f"(total_bytes={len(audio_data)}, rate={rate}, chunk_seconds={STT_PCM_CHUNK_SECONDS})"
+    )
+    texts: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        print(f"[STT] Recognizing chunk {index}/{len(chunks)} bytes={len(chunk)}")
+        text = _speech_client.speech_to_text(chunk, fmt=fmt, rate=rate)
+        if text and text.strip():
+            texts.append(text.strip())
+    return " ".join(texts).strip()
 
 
 @app.route('/api/speech/polish', methods=['POST'])

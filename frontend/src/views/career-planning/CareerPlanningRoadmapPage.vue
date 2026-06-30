@@ -5,8 +5,17 @@ import { useCareerPlanningStore } from '../../stores/careerPlanning'
 
 const store = useCareerPlanningStore()
 
+// 阶段完成数与总进度：根据任务聚合，milestone.status 由后端统一计算，
+// 不再依赖前端硬性按 milestone.status === 'completed' 计数。
 const completedCount = computed(() => store.milestones.filter(m => m.status === 'completed').length)
-const progressPercent = computed(() => store.milestones.length ? Math.round((completedCount.value / store.milestones.length) * 100) : 0)
+const progressPercent = computed(() => {
+  // 优先使用 stats.progress_rate（已与任务进度同步），fallback 到阶段完成率
+  if (typeof store.stats?.progress_rate === 'number' && store.stats.progress_rate >= 0) {
+    return store.stats.progress_rate
+  }
+  if (!store.milestones.length) return 0
+  return Math.round((completedCount.value / store.milestones.length) * 100)
+})
 </script>
 
 <template>

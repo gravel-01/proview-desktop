@@ -254,8 +254,9 @@ def perform_ocr(image_path: str, use_preprocessing: bool = True, is_screen_captu
     except requests.exceptions.Timeout:
         return "错误: OCR API 请求超时（60秒），请检查网络连接或稍后重试"
     except requests.exceptions.HTTPError as e:
-        status_code = e.response.status_code if e.response else "未知"
-        error_text = e.response.text[:500] if e.response else str(e)
+        response = e.response
+        status_code = response.status_code if response is not None else "未知"
+        error_text = response.text[:500] if response is not None else str(e)
         return f"错误: OCR API 返回 HTTP {status_code} 错误\n详情: {error_text}"
     except requests.exceptions.ConnectionError:
         return f"错误: 无法连接到 OCR API ({api_url})，请检查网络连接"

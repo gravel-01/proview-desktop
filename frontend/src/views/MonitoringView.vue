@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   Activity,
   AlertCircle,
@@ -10,6 +11,7 @@ import {
   Eye,
   RefreshCw,
   ServerCog,
+  Settings,
   Wrench,
   X,
 } from 'lucide-vue-next'
@@ -50,6 +52,7 @@ interface PricingRule {
 const PRICING_RULES_STORAGE_KEY = 'proview.monitoring.pricingRules.v1'
 const pricingCurrencies = ['USD', 'CNY', 'EUR', 'JPY', 'credits']
 
+const router = useRouter()
 const hoursOptions = [1, 6, 24, 72, 168]
 const selectedHours = ref(24)
 const loading = ref(false)
@@ -80,6 +83,7 @@ const statusTone = computed(() => {
   if (!status.value.configured || !status.value.available) return 'error'
   return 'success'
 })
+const needsLangfuseSetup = computed(() => !!status.value && !status.value.configured)
 
 const overviewMetrics = computed(() => [
   {
@@ -348,6 +352,10 @@ function closeTraceDetail() {
   traceDetail.value = null
 }
 
+function goRuntimeConfig() {
+  router.push({ name: 'runtime-config', query: { panel: 'observability' } })
+}
+
 function observationTitle(observation: MonitoringObservation) {
   return observation.name || observation.model || observation.type || observation.id
 }
@@ -415,6 +423,23 @@ onMounted(() => {
 
     <section v-if="error" class="monitoring-alert">
       {{ error }}
+    </section>
+
+    <section v-if="needsLangfuseSetup" class="monitoring-setup-empty">
+      <div class="monitoring-setup-empty__icon">
+        <ServerCog class="h-6 w-6" />
+      </div>
+      <div>
+        <p class="monitoring-label">Langfuse 未接入</p>
+        <h2>尚未接入 Langfuse</h2>
+        <p>
+          接入后可查看 Trace、模型耗时、Token 成本和 Agent 失败链路。Langfuse 是可选观测能力，不影响面试训练本身。
+        </p>
+      </div>
+      <button type="button" class="monitoring-button monitoring-button--primary" @click="goRuntimeConfig">
+        <Settings class="h-4 w-4" />
+        去应用设置接入
+      </button>
     </section>
 
     <section class="monitoring-grid monitoring-grid--metrics">
@@ -799,6 +824,46 @@ onMounted(() => {
   padding: 0.9rem 1rem;
   color: var(--ui-danger);
   font-weight: 700;
+}
+
+.monitoring-setup-empty {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  border-radius: var(--ui-radius-lg);
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  background:
+    radial-gradient(circle at 8% 18%, rgba(59, 130, 246, 0.12), transparent 30%),
+    var(--ui-surface-1);
+  box-shadow: var(--ui-shadow-md);
+  padding: 1.25rem;
+}
+
+.monitoring-setup-empty__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 1.1rem;
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-strong);
+}
+
+.monitoring-setup-empty h2 {
+  margin-top: 0.35rem;
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: var(--ui-text-primary);
+}
+
+.monitoring-setup-empty p:not(.monitoring-label) {
+  margin-top: 0.35rem;
+  max-width: 48rem;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: var(--ui-text-secondary);
 }
 
 .monitoring-grid {
@@ -1261,9 +1326,14 @@ onMounted(() => {
   .monitoring-hero,
   .monitoring-hero__actions,
   .monitoring-section__head,
-  .monitoring-detail__head {
+  .monitoring-detail__head,
+  .monitoring-setup-empty {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .monitoring-setup-empty {
+    grid-template-columns: 1fr;
   }
 
   .monitoring-grid--metrics,

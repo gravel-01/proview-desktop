@@ -5,6 +5,10 @@ const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-gpu-compositing')
+
 const API_HOST = '127.0.0.1'
 const API_PORT = Number.parseInt(process.env.PROVIEW_API_PORT || '18765', 10)
 const API_BASE_URL = `http://${API_HOST}:${API_PORT}`
@@ -35,6 +39,19 @@ function logBootstrap(message) {
   } catch {
     // Ignore bootstrap log failures.
   }
+}
+
+function stringifyError(error) {
+  if (!error) {
+    return 'Unknown error'
+  }
+  if (error.stack) {
+    return String(error.stack)
+  }
+  if (error.message) {
+    return String(error.message)
+  }
+  return String(error)
 }
 
 function appendBackendLog(chunk) {
@@ -74,10 +91,13 @@ function getBackendSpawnConfig() {
     }
   }
 
+  const backendDir = path.join(process.resourcesPath, 'backend', 'proview-backend')
+  const backendExecutable = process.platform === 'win32' ? 'proview-backend.exe' : 'proview-backend'
+
   return {
-    command: path.join(process.resourcesPath, 'backend', 'proview-backend', 'proview-backend.exe'),
+    command: path.join(backendDir, backendExecutable),
     args: [],
-    cwd: path.join(process.resourcesPath, 'backend', 'proview-backend'),
+    cwd: backendDir,
   }
 }
 
@@ -162,20 +182,33 @@ function ensureRuntimeEnvFile() {
 function buildBackendEnv() {
   const backendDataDir = path.join(app.getPath('userData'), 'backend-data')
   const runtimeEnvFilePath = ensureRuntimeEnvFile()
-  return {
+  const env = {
     ...process.env,
     PROVIEW_API_HOST: API_HOST,
     PROVIEW_API_PORT: String(API_PORT),
     PROVIEW_DESKTOP_MODE: '1',
     PYTHONIOENCODING: process.env.PYTHONIOENCODING || 'utf-8',
     PYTHONUTF8: process.env.PYTHONUTF8 || '1',
-    PROVIEW_PLAYWRIGHT_CHANNEL: process.env.PROVIEW_PLAYWRIGHT_CHANNEL || 'msedge',
     PROVIEW_APP_DATA_DIR: backendDataDir,
     PROVIEW_ENV_FILE: runtimeEnvFilePath,
     PROVIEW_SQLITE_DB_PATH: 'data/interviews.db',
     PROVIEW_CAREER_DB_PATH: 'data/career_planning.sqlite3',
     PROVIEW_SESSION_TOKEN_DB_PATH: 'data/session_tokens.sqlite3',
   }
+
+  if (process.env.PROVIEW_PLAYWRIGHT_CHANNEL) {
+    env.PROVIEW_PLAYWRIGHT_CHANNEL = process.env.PROVIEW_PLAYWRIGHT_CHANNEL
+  } else if (process.platform === 'win32') {
+    env.PROVIEW_PLAYWRIGHT_CHANNEL = 'msedge'
+  }
+
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+    env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH
+  } else if (app.isPackaged && process.platform === 'darwin') {
+    env.PLAYWRIGHT_BROWSERS_PATH = '0'
+  }
+
+  return env
 }
 
 function startBackend() {
@@ -333,9 +366,16 @@ async function createSplashWindow() {
 
   splashWindow = window
   window.on('closed', () => {
+    logBootstrap('Splash window closed.')
     if (splashWindow === window) {
       splashWindow = null
     }
+  })
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logBootstrap(`Splash renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    logBootstrap(`Splash console[level=${level}] ${sourceId}:${line} ${message}`)
   })
   window.once('ready-to-show', () => {
     if (!window.isDestroyed()) {
@@ -397,6 +437,15 @@ async function createAppWindow() {
     if (mainWindow === window) {
       void recoverMainWindow('渲染进程无响应')
     }
+  })
+  window.on('closed', () => {
+    logBootstrap('Main window closed.')
+  })
+  window.webContents.on('preload-error', (_event, preloadPath, error) => {
+    logBootstrap(`Preload error at ${preloadPath}: ${stringifyError(error)}`)
+  })
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    logBootstrap(`Renderer console[level=${level}] ${sourceId}:${line} ${message}`)
   })
   window.webContents.on('render-process-gone', (_event, details) => {
     logBootstrap(`Renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`)
@@ -526,8 +575,21 @@ async function reportStartupFailure(error, shouldQuit = false) {
 }
 
 app.on('before-quit', () => {
+  logBootstrap('App before-quit.')
   isQuitting = true
   stopBackend()
+})
+
+process.on('uncaughtException', (error) => {
+  logBootstrap(`Uncaught exception: ${stringifyError(error)}`)
+})
+
+process.on('unhandledRejection', (reason) => {
+  logBootstrap(`Unhandled rejection: ${stringifyError(reason)}`)
+})
+
+app.on('child-process-gone', (_event, details) => {
+  logBootstrap(`Child process gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode} name=${details.name}`)
 })
 
 app.on('second-instance', async (_event, commandLine, workingDirectory) => {
@@ -543,6 +605,7 @@ app.on('second-instance', async (_event, commandLine, workingDirectory) => {
 app.whenReady().then(async () => {
   try {
     logBootstrap(`App ready. isPackaged=${app.isPackaged} resourcesPath=${process.resourcesPath}`)
+    logBootstrap(`Runtime: electron=${process.versions.electron} chrome=${process.versions.chrome} node=${process.versions.node} platform=${process.platform} arch=${process.arch}`)
     registerDesktopFileHandlers()
     await ensureMainWindow()
   } catch (error) {

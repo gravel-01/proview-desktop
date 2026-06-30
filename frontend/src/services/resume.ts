@@ -30,42 +30,46 @@ resumeApi.interceptors.request.use((config) => {
   return config
 })
 
-export async function analyzeResume(file: File, jobTitle: string, reportContext?: ResumeReportContext | null): Promise<ResumeAnalyzeResponse> {
+export async function analyzeResume(file: File, jobTitle: string, reportContext?: ResumeReportContext | null, modelProvider = ''): Promise<ResumeAnalyzeResponse> {
   assertValidResumeFile(file)
   const formData = new FormData()
   formData.append('resume', file)
   if (jobTitle) formData.append('job_title', jobTitle)
   if (reportContext) formData.append('report_context', JSON.stringify(reportContext))
+  if (modelProvider) formData.append('model_provider', modelProvider)
   const { data } = await resumeApi.post<ResumeAnalyzeResponse>('/api/resume/analyze', formData)
   return data
 }
 
 /** 使用已有 OCR 文本直接分析（跳过 OCR，复用面试结果） */
-export async function analyzeResumeWithOcr(ocrText: string, jobTitle: string, reportContext?: ResumeReportContext | null): Promise<ResumeAnalyzeResponse> {
+export async function analyzeResumeWithOcr(ocrText: string, jobTitle: string, reportContext?: ResumeReportContext | null, modelProvider = ''): Promise<ResumeAnalyzeResponse> {
   const { data } = await resumeApi.post<ResumeAnalyzeResponse>('/api/resume/analyze', {
     ocr_text: ocrText,
     job_title: jobTitle,
     report_context: reportContext || undefined,
+    model_provider: modelProvider || undefined,
   })
   return data
 }
 
 /** 流式分析简历（上传文件） */
-export async function analyzeResumeStream(file: File, jobTitle: string, callbacks: SSECallbacks, reportContext?: ResumeReportContext | null): Promise<void> {
+export async function analyzeResumeStream(file: File, jobTitle: string, callbacks: SSECallbacks, reportContext?: ResumeReportContext | null, modelProvider = ''): Promise<void> {
   assertValidResumeFile(file)
   const formData = new FormData()
   formData.append('resume', file)
   if (jobTitle) formData.append('job_title', jobTitle)
   if (reportContext) formData.append('report_context', JSON.stringify(reportContext))
+  if (modelProvider) formData.append('model_provider', modelProvider)
   await fetchSSE(buildApiUrl('/api/resume/analyze-stream'), formData, callbacks)
 }
 
 /** 流式分析简历（使用已有 OCR 文本） */
-export async function analyzeResumeWithOcrStream(ocrText: string, jobTitle: string, callbacks: SSECallbacks, reportContext?: ResumeReportContext | null): Promise<void> {
+export async function analyzeResumeWithOcrStream(ocrText: string, jobTitle: string, callbacks: SSECallbacks, reportContext?: ResumeReportContext | null, modelProvider = ''): Promise<void> {
   await fetchSSE(buildApiUrl('/api/resume/analyze-stream'), {
     ocr_text: ocrText,
     job_title: jobTitle,
     report_context: reportContext || undefined,
+    model_provider: modelProvider || undefined,
   }, callbacks)
 }
 

@@ -1,10 +1,15 @@
 import api from './api'
 import type {
+  CareerDashboardResponse,
+  CareerDocReadStatePayload,
+  CareerDocRecommendation,
+  CareerDocSection,
   CareerDocsResponse,
   CareerDocumentResponse,
   CareerListPlansResponse,
+  CareerMarkDocReadPayload,
+  CareerMarkDocReadResult,
   CareerPlanDetailResponse,
-  CareerDashboardResponse,
   GenerateCareerPlanPayload,
   UpdateCareerTaskPayload,
 } from '../types/career-planning'
@@ -161,6 +166,174 @@ export async function appendCareerTaskLog(taskId: number, payload: UpdateCareerT
   const response = await api.post<CareerDashboardResponse>(`/api/career/tasks/${taskId}/logs`, payload)
   invalidateCareerCache()
   return response.data
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: resource-closure (doc library → task → user behaviour)
+// ---------------------------------------------------------------------------
+
+export interface CareerDocRecommendationsParams {
+  planId?: number
+  limit?: number
+  scoreThreshold?: number
+}
+
+export interface CareerDocSectionsResponse {
+  status: string
+  data: {
+    sections: CareerDocSection[]
+  }
+  message?: string
+}
+
+export interface CareerDocRecommendationsResponse {
+  status: string
+  data: {
+    recommendations: CareerDocRecommendation[]
+  }
+  message?: string
+}
+
+export interface CareerDocReadStateResponse {
+  status: string
+  data: CareerDocReadStatePayload & { doc_id: string }
+  message?: string
+}
+
+export interface CareerDocMarkReadResponse {
+  status: string
+  data: CareerMarkDocReadResult
+  message?: string
+}
+
+export interface CareerDocFavoritesResponse {
+  status: string
+  data: {
+    doc_ids: string[]
+  }
+  message?: string
+}
+
+export interface CareerTaskDocsResponse {
+  status: string
+  data: {
+    task_id: number
+    docs: Array<{ doc_id: string; section_idx: number; reason: string }>
+  }
+  message?: string
+}
+
+/**
+ * Fetch the section-level recommender output for a plan. The default
+ * plan is the user's active plan; pass `planId` to override.
+ */
+export async function getCareerDocRecommendations(
+  params: CareerDocRecommendationsParams = {},
+  options: CareerRequestOptions = {},
+) {
+  const search = new URLSearchParams()
+  if (params.planId) search.set('plan_id', String(params.planId))
+  if (params.limit) search.set('limit', String(params.limit))
+  if (params.scoreThreshold) search.set('score_threshold', String(params.scoreThreshold))
+  const qs = search.toString()
+  const url = `/api/career/docs/recommend${qs ? `?${qs}` : ''}`
+  return readCareerResource('GET', url, async () => {
+    const response = await api.get<CareerDocRecommendationsResponse>(url)
+    return response.data
+  }, options)
+}
+
+/**
+ * Load the full index of doc sections (with structured tags). Used by
+ * the docs page to render the catalogue locally without re-fetching
+ * every time the recommender runs.
+ */
+export async function getCareerDocSections(options: CareerRequestOptions = {}) {
+  return readCareerResource('GET', '/api/career/docs/sections', async () => {
+    const response = await api.get<CareerDocSectionsResponse>('/api/career/docs/sections')
+    return response.data
+  }, options)
+}
+
+/**
+ * Persist a reading event (section scrolled to the end / "mark as read"
+ * button). When `completed=true` the backend also advances the linked
+ * task's progress.
+ */
+export async function markCareerDocRead(payload: CareerMarkDocReadPayload) {
+  const response = await api.post<CareerDocMarkReadResponse>(
+    `/api/career/docs/${encodeURIComponent(payload.doc_id)}/progress`,
+    {
+      section_idx: payload.section_idx,
+      read_seconds: payload.read_seconds ?? 0,
+      completed: payload.completed ?? false,
+      task_id: payload.task_id ?? null,
+    },
+  )
+  invalidateCareerCache()
+  return response.data
+}
+
+/**
+ * Read the persisted read state for one document.
+ */
+export async function getCareerDocReadState(docId: string, options: CareerRequestOptions = {}) {
+  return readCareerResource('GET', `/api/career/docs/${encodeURIComponent(docId)}/progress`, async () => {
+    const response = await api.get<CareerDocReadStateResponse>(
+      `/api/career/docs/${encodeURIComponent(docId)}/progress`,
+    )
+    return response.data
+  }, options)
+}
+
+/**
+ * Toggle the favourite flag for a document. Returns the new state.
+ */
+export async function toggleCareerDocFavorite(docId: string) {
+  const response = await api.post<{
+    status: string
+    data: { doc_id: string; favorited: boolean }
+    message?: string
+  }>(`/api/career/docs/${encodeURIComponent(docId)}/favorite`)
+  invalidateCareerCache()
+  return response.data
+}
+
+/**
+ * List all favourite doc ids for the current user.
+ */
+export async function listCareerDocFavorites(options: CareerRequestOptions = {}) {
+  return readCareerResource('GET', '/api/career/docs/favorites', async () => {
+    const response = await api.get<CareerDocFavoritesResponse>('/api/career/docs/favorites')
+    return response.data
+  }, options)
+}
+
+/**
+ * Manually link a doc section to a task. Used by the "添加为资源" button
+ * in the docs panel; the recommender also calls this internally when
+ * persisting a plan.
+ */
+export async function linkCareerTaskDoc(
+  taskId: number,
+  payload: { doc_id: string; section_idx: number; reason?: string },
+) {
+  const response = await api.post<{ status: string; data: { task_id: number; doc_id: string; section_idx: number; reason: string } }>(
+    `/api/career/tasks/${taskId}/link-docs`,
+    payload,
+  )
+  invalidateCareerCache()
+  return response.data
+}
+
+/**
+ * List the doc sections linked to a task.
+ */
+export async function getCareerTaskDocs(taskId: number, options: CareerRequestOptions = {}) {
+  return readCareerResource('GET', `/api/career/tasks/${taskId}/docs`, async () => {
+    const response = await api.get<CareerTaskDocsResponse>(`/api/career/tasks/${taskId}/docs`)
+    return response.data
+  }, options)
 }
 
 export { invalidateCareerCache, normalizeCareerApiError }

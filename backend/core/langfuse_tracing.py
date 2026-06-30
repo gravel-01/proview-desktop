@@ -11,6 +11,7 @@ from typing import Any, Optional
 _LANGFUSE_CLIENT_INITIALIZED = False
 _LANGFUSE_CLIENT_INIT_FAILED = False
 _LANGFUSE_INIT_ERROR: Optional[Exception] = None
+_LANGFUSE_LAST_CONFIG: tuple[str, str, str] | None = None
 
 
 def _build_usage_enriching_handler(callback_handler_cls):
@@ -32,6 +33,13 @@ def _read_env(key: str) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _read_bool_env(key: str, default: bool = True) -> bool:
+    raw = _read_env(key).lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _ensure_langfuse_client_initialized(
     *,
     public_key: str,
@@ -42,6 +50,14 @@ def _ensure_langfuse_client_initialized(
     global _LANGFUSE_CLIENT_INITIALIZED
     global _LANGFUSE_CLIENT_INIT_FAILED
     global _LANGFUSE_INIT_ERROR
+    global _LANGFUSE_LAST_CONFIG
+
+    current_config = (public_key, secret_key, base_url)
+    if _LANGFUSE_LAST_CONFIG != current_config:
+        _LANGFUSE_CLIENT_INITIALIZED = False
+        _LANGFUSE_CLIENT_INIT_FAILED = False
+        _LANGFUSE_INIT_ERROR = None
+        _LANGFUSE_LAST_CONFIG = current_config
 
     if _LANGFUSE_CLIENT_INITIALIZED:
         return True
@@ -73,6 +89,9 @@ def _ensure_langfuse_client_initialized(
 
 def get_langfuse_callback_handler() -> Optional[Any]:
     """Create a Langfuse LangChain callback handler when configured."""
+    if not _read_bool_env("PROVIEW_MONITORING_ENABLED", True):
+        return None
+
     secret_key = _read_env("LANGFUSE_SECRET_KEY")
     public_key = _read_env("LANGFUSE_PUBLIC_KEY")
     base_url = _read_env("LANGFUSE_BASE_URL")
@@ -177,7 +196,7 @@ def _merge_trace_context(config: dict, trace_context: Optional[dict]) -> None:
     if isinstance(context_metadata, dict):
         for key, value in context_metadata.items():
             if _is_safe_metadata_value(value):
-                metadata.setdefault(str(key), value)
+                metadata.setdefault(str(key), _stringify_metadata_value(value))
 
     if metadata:
         config["metadata"] = metadata
@@ -221,6 +240,22 @@ def _is_safe_metadata_value(value: Any) -> bool:
             for key, item in value.items()
         )
     return False
+
+
+def _stringify_metadata_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return ",".join(_stringify_metadata_value(item) for item in value)
+    if isinstance(value, dict):
+        return ",".join(
+            f"{key}:{_stringify_metadata_value(item)}"
+            for key, item in value.items()
+            if isinstance(key, str)
+        )
+    return str(value)
 
 
 def _enrich_llm_result_usage(response: Any) -> None:
