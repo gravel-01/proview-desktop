@@ -1,3 +1,5 @@
+import type { LegacyImportSummary, RuntimeModelRecord } from './models'
+
 const API_BASE_URL_STORAGE_KEY = 'proview_runtime_api_base_url'
 
 export interface RuntimeConfigFieldSnapshot {
@@ -12,8 +14,11 @@ export interface RuntimeConfigFieldSnapshot {
 export interface RuntimeConfigResponse {
   status: string
   env_file_path: string
+  models_file_path?: string
+  legacy_import?: LegacyImportSummary
   fields: Record<string, RuntimeConfigFieldSnapshot>
-  models: Array<{ key: string; label: string; available: boolean }>
+  models: RuntimeModelRecord[]
+  default_model_id?: string
   speech_available: boolean
   message?: string
 }

@@ -2412,9 +2412,9 @@ class CareerPlanningService:
         bus = self.memory_bus()
         return list(bus.doc_favorites().list_for_user(int(user_id)))
 
-    def list_task_resource_refs(self, task_id: int) -> List[Dict[str, Any]]:
+    def list_task_resource_refs(self, task_id: int, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         bus = self.memory_bus()
-        return list(bus.task_resource_refs().list_for_task(int(task_id)))
+        return list(bus.task_resource_refs().list_for_task(int(task_id), user_id=user_id))
 
     def link_task_to_doc(
         self,
@@ -2463,4 +2463,3 @@ class CareerPlanningService:
             "section_idx": int(section_idx),
             "reason": str(reason or ""),
         }
-

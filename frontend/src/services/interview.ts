@@ -33,7 +33,7 @@ export async function setupInterview(config: InterviewConfig): Promise<SetupResp
   formData.append('difficulty', config.difficulty)
   formData.append('feature_vad', String(config.featureVad))
   formData.append('feature_deep', String(config.featureDeep))
-  formData.append('model_provider', config.modelProvider)
+  formData.append('model_id', config.modelId)
   if (config.jobRequirements?.trim()) {
     formData.append('job_requirements', config.jobRequirements.trim())
   }
@@ -209,7 +209,7 @@ export async function setupInterviewStream(
   formData.append('difficulty', config.difficulty)
   formData.append('feature_vad', String(config.featureVad))
   formData.append('feature_deep', String(config.featureDeep))
-  formData.append('model_provider', config.modelProvider)
+  formData.append('model_id', config.modelId)
   if (config.jobRequirements?.trim()) {
     formData.append('job_requirements', config.jobRequirements.trim())
   }

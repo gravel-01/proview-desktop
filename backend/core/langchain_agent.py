@@ -43,15 +43,6 @@ except Exception:
     except Exception:
         PromptManager = None
 
-try:
-    from core.langfuse_tracing import merge_langfuse_callback_config
-except Exception:
-    try:
-        from .langfuse_tracing import merge_langfuse_callback_config
-    except Exception:
-        def merge_langfuse_callback_config(config=None):
-            return config
-
 # 3. 尝试导入 langchain 的标准组件
 HAVE_LANGCHAIN = False
 create_openai_functions_agent = None
@@ -364,7 +355,7 @@ class LangChainInterviewAgent:
         try:
             if self.agent_executor:
                 # AgentExecutor 接收 dict 格式输入
-                run_config = merge_langfuse_callback_config(trace_context=trace_context)
+                run_config = None
                 hidden_context_mode = self._agent_executor_hidden_context_mode
                 if context and hidden_context_mode == "messages" and SystemMessage is not None:
                     invoke_payload = {
@@ -715,15 +706,20 @@ class LangChainInterviewAgent:
 
 if __name__ == "__main__":
     try:
-        from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, reload_runtime_settings
+        from config import reload_runtime_settings
+        from core.model_registry import resolve_model_selection
 
         reload_runtime_settings()
-        api_key = DEEPSEEK_API_KEY
-        base_url = DEEPSEEK_BASE_URL
+        selection = resolve_model_selection("")
+        provider = selection.model
+        api_key = provider.api_key if provider else ""
+        base_url = provider.base_url if provider else ""
+        model_name = provider.model if provider else ""
     except Exception:
         load_dotenv()
-        api_key = os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        base_url = os.getenv("OPENAI_BASE_URL", os.getenv("OPENAI_API_BASE", ""))
+        model_name = os.getenv("OPENAI_MODEL", "")
 
     try:
         from langchain.tools import Tool
@@ -733,17 +729,8 @@ if __name__ == "__main__":
         except Exception:
             Tool = None
 
-    try:
-        from core.langfuse_tracing import get_langfuse_callback_handler
-    except Exception:
-        try:
-            from langfuse_tracing import get_langfuse_callback_handler
-        except Exception:
-            def get_langfuse_callback_handler():
-                return None
-
     def demo_candidate_profile(candidate_name: str) -> str:
-        """Return a deterministic candidate profile for Langfuse agent tracing demos."""
+        """Return a deterministic candidate profile for local agent demos."""
         raw_name = str(candidate_name or "").strip()
         try:
             parsed = json.loads(raw_name)
@@ -758,12 +745,11 @@ if __name__ == "__main__":
             "最近项目是 AI 面试系统，负责 Agent 编排、LLM 调用和可观测性建设。"
         )
 
-    print("=== Langfuse LangChain Agent Tool Trace Demo ===")
+    print("=== LangChain Agent Tool Demo ===")
     print(f"LangChain available: {HAVE_LANGCHAIN}")
     print(f"ChatOpenAI available: {ChatOpenAI is not None}")
     print(f"Tool available: {Tool is not None}")
     print(f"ReAct agent available: {initialize_agent_fn is not None and AgentTypeEnum is not None}")
-    print(f"Langfuse callback enabled: {get_langfuse_callback_handler() is not None}")
     print(f"LLM API key configured: {bool(api_key)}")
     print(f"LLM base_url: {base_url}")
     print()
@@ -771,7 +757,7 @@ if __name__ == "__main__":
     interviewer = LangChainInterviewAgent(
         api_key=api_key,
         base_url=base_url,
-        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        model=model_name,
         verbose=True,
         max_history_turns=3,
         role="interviewer",
@@ -834,4 +820,4 @@ if __name__ == "__main__":
     print("=== Intermediate Steps ===")
     print(json.dumps(steps, ensure_ascii=False, indent=2))
     print()
-    print("If Langfuse callback enabled=True, open Langfuse and inspect this trace's AgentExecutor, LLM, and tool spans.")
+    print("Demo finished.")

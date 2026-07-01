@@ -69,8 +69,8 @@
 
 ### 下载桌面版
 
-1. 前往 [GitHub Release](https://github.com/gravel-01/proview-desktop/releases/tag/v0.1.1-alpha.3) 下载最新安装包
-2. 双击安装，首次启动后在**应用设置**中填入 API 密钥
+1. 前往 [GitHub Release](https://github.com/gravel-01/proview-desktop/releases/tag/v0.1.1-alpha.2) 下载最新安装包
+2. 双击安装，首次启动后在**应用设置 → 模型配置**中新增至少一个 OpenAI 兼容模型
 3. 开始使用
 
 > 百度文心、PaddleOCR、语音服务均有每日免费额度。
@@ -96,22 +96,28 @@ cd ../desktop
 npm install
 ```
 
-#### 2. 配置环境变量
+#### 2. 准备运行时配置
 
 ```powershell
 cd backend
 Copy-Item .env.example .env
 ```
 
-最小可用配置：
+大模型不再以 `.env` 作为主配置方式。启动应用后进入 `http://localhost:5173/app.html#/config`，在**模型配置**中新增模型、填写 API Key / Base URL / Model Name，并设置默认模型。
+
+`.env` 现在主要承载固定运行时配置，例如本地端口、OCR、语音和数据库路径：
 
 ```env
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+PROVIEW_API_PORT=5000
 
-ERNIE_API_KEY=
-ERNIE_BASE_URL=https://aistudio.baidu.com/llm/lmapi/v3
+PADDLEOCR_API_URL=
+PADDLE_OCR_TOKEN=
+
+BAIDU_APP_KEY=
+BAIDU_SECRET_KEY=
 ```
+
+如果旧 `.env` 中已经有 `DEEPSEEK_* / ERNIE_*`，后端会在 `models.json` 不存在时做一次性导入；导入后模型中心的 `models.json` 才是主存储，不会长期双读旧字段。桌面版默认落到应用数据目录的 `backend-data/models.json`，Web 开发模式默认落到 `backend/models.json`。
 
 #### 3. 启动项目
 
@@ -159,24 +165,24 @@ npx electron .
 >  [ProView AI Interviewer 详细架构说明文档](https://gravel-01.github.io/architecture.html)
 
  
-## API 配置
+## API 与模型配置
 
 <details>
 <summary><b>常用配置速查</b></summary>
 
-| 配置项 | 用途 | 免费额度 |
-|--------|------|---------|
-| `ERNIE_API_KEY` | 百度文心一言 | 每日免费 |
-| `PADDLEOCR_API_URL` | 简历 OCR 解析 | 每日免费 |
-| `BAIDU_APP_KEY` | 百度语音识别/合成 | 每日免费 |
-| `DEEPSEEK_API_KEY` | DeepSeek 大模型 | 需付费 |
+| 配置位置 | 用途 | 说明 |
+|--------|------|------|
+| 应用设置 → 模型配置 | 面试、简历优化、报告等文本模型 | 支持 OpenAI 兼容 API，例如 DeepSeek、文心千帆兼容接口或本地网关 |
+| `PADDLEOCR_API_URL` / `PADDLE_OCR_TOKEN` | 简历 OCR 解析 | 不配置时 OCR 相关能力不可用 |
+| `BAIDU_APP_KEY` / `BAIDU_SECRET_KEY` | 百度语音识别/合成 | 不配置时语音相关能力不可用 |
+| `PROVIEW_API_PORT` | 本地 Flask 端口 | 默认 `5000` |
 
 </details>
 
 <details>
 <summary><b>密钥获取教程</b></summary>
 
-登录 [百度星河社区](https://aistudio.baidu.com/overview) → 完成实名认证 → 获取文心 API Key → 填入应用设置。
+登录 [百度星河社区](https://aistudio.baidu.com/overview) → 完成实名认证 → 获取文心 API Key → 在应用设置的模型配置中新增 OpenAI 兼容模型。
 
 语音功能:[百度千帆平台](https://console.bce.baidu.com/) → 完成实名认证 → 获取语音模型 APP Key/SECRET Key → 填入应用设置。
 
@@ -198,7 +204,7 @@ npx electron .
          ↓
    Flask 后端 (LangChain + SSE)
          ↓
-LLM (DeepSeek / 文心) · OCR (PaddleOCR) · 语音 (百度)
+LLM (OpenAI 兼容模型) · OCR (PaddleOCR) · 语音 (百度)
          ↓
  PostgreSQL / SQLite (本地存储，数据不外传)
 ```
@@ -209,7 +215,7 @@ LLM (DeepSeek / 文心) · OCR (PaddleOCR) · 语音 (百度)
 | 后端 | Flask + LangChain + SSE + Playwright |
 | 桌面壳 | Electron + electron-builder |
 | 存储 | PostgreSQL / SQLite 本地优先 |
-| AI | DeepSeek / 文心一言 |
+| AI | OpenAI 兼容文本模型（DeepSeek / 文心等） |
 
 ---
 
@@ -231,7 +237,13 @@ proview-desktop/
 <details>
 <summary><b>不填 API 密钥能用吗？</b></summary>
 
-可以启动，但 AI 面试、OCR、语音功能不可用。建议至少配置一个模型密钥体验核心流程。
+可以启动，但 AI 面试、简历优化和报告生成等文本模型能力不可用。建议在模型配置中至少新增一个可用模型体验核心流程。
+</details>
+
+<details>
+<summary><b>还需要配置 Langfuse 或运行监控吗？</b></summary>
+
+不需要。正式桌面版已移除 Langfuse / monitoring 用户链路，安装和启动都不再依赖这些配置。
 </details>
 
 <details>

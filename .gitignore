@@ -40,6 +40,8 @@ backend/data/*.sqlite
 backend/data/*.sqlite-*
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
+backend/models.json
+backend-data/
 database/interviews.db
 database/interviews.db-wal
 database/interviews.db-shm
@@ -237,4 +239,3 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 codex-data/
-

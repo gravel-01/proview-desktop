@@ -60,8 +60,7 @@ const router = createRouter({
     },
     {
       path: '/monitoring',
-      name: 'monitoring',
-      component: () => import('../views/MonitoringView.vue')
+      redirect: '/config?panel=models',
     },
     {
       path: '/career-planning',

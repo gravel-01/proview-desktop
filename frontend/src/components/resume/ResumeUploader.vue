@@ -255,7 +255,7 @@ function syncQuestionnaireContext() {
 function startAnalyze() {
   syncQuestionnaireContext()
   const finalJobTitle = jobTitle.value.trim() || questionnaireStore.formData.targetRole.trim()
-  const modelProvider = interviewStore.config.modelProvider
+  const modelProvider = interviewStore.config.modelId
 
   if (mode.value === 'existing' && existingOcrText.value) {
     store.analyzeFromOcr(existingOcrText.value, finalJobTitle, modelProvider)

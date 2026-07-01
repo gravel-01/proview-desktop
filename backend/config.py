@@ -50,42 +50,6 @@ RUNTIME_CONFIG_FIELDS = {
         "default": "本地用户",
         "description": "单机模式下展示在界面中的当前用户名称。",
     },
-    "DEEPSEEK_BASE_URL": {
-        "label": "DeepSeek API URL",
-        "secret": False,
-        "default": "https://api.deepseek.com/v1",
-        "description": "DeepSeek/OpenAI 兼容网关地址。",
-    },
-    "DEEPSEEK_API_KEY": {
-        "label": "DeepSeek API Key",
-        "secret": True,
-        "default": "",
-        "description": "用于 DeepSeek 模型调用。",
-    },
-    "ERNIE_BASE_URL": {
-        "label": "文心 API URL",
-        "secret": False,
-        "default": "https://aistudio.baidu.com/llm/lmapi/v3",
-        "description": "百度文心模型网关地址。",
-    },
-    "ERNIE_API_KEY": {
-        "label": "文心 API Key",
-        "secret": True,
-        "default": "",
-        "description": "用于文心模型调用。",
-    },
-    "INTERNAL_ERNIE_BASE_URL": {
-        "label": "内测大模型（未开放）API URL",
-        "secret": False,
-        "default": "",
-        "description": "仅限已获得本地内测地址的用户填写；留空时该模型入口不可用。",
-    },
-    "INTERNAL_ERNIE_MODEL": {
-        "label": "内测大模型（未开放）模型名",
-        "secret": False,
-        "default": "ERNIE-4.5-21B-A3B",
-        "description": "内测模型 ID，通常保持默认值。",
-    },
     "PADDLEOCR_API_URL": {
         "label": "PaddleOCR API URL",
         "secret": True,
@@ -109,30 +73,6 @@ RUNTIME_CONFIG_FIELDS = {
         "secret": True,
         "default": "",
         "description": "语音识别/合成 Secret Key。",
-    },
-    "PROVIEW_MONITORING_ENABLED": {
-        "label": "启用运行追踪",
-        "secret": False,
-        "default": "1",
-        "description": "控制 Langfuse 运行观测与追踪是否启用。",
-    },
-    "LANGFUSE_BASE_URL": {
-        "label": "Langfuse Base URL",
-        "secret": False,
-        "default": "https://cloud.langfuse.com",
-        "description": "Langfuse Cloud 或自托管实例地址。",
-    },
-    "LANGFUSE_PUBLIC_KEY": {
-        "label": "Langfuse Public Key",
-        "secret": True,
-        "default": "",
-        "description": "Langfuse 项目的 Public Key。",
-    },
-    "LANGFUSE_SECRET_KEY": {
-        "label": "Langfuse Secret Key",
-        "secret": True,
-        "default": "",
-        "description": "Langfuse 项目的 Secret Key。",
     },
 }
 
@@ -212,12 +152,6 @@ os.makedirs(OCR_PROCESSED_DIR, exist_ok=True)
 os.makedirs(OCR_OUTPUT_DIR, exist_ok=True)
 os.makedirs(STATIC_FOLDER, exist_ok=True)
 
-DEEPSEEK_API_KEY = ""
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-ERNIE_API_KEY = ""
-ERNIE_BASE_URL = "https://aistudio.baidu.com/llm/lmapi/v3"
-INTERNAL_ERNIE_BASE_URL = ""
-INTERNAL_ERNIE_MODEL = "ERNIE-4.5-21B-A3B"
 SERPER_API_KEY = ""
 SECRET_KEY = "proview-dev-secret"
 CORS_ORIGINS = _build_cors_origins()
@@ -235,8 +169,6 @@ def reload_runtime_settings() -> dict:
     global SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY
     global LOCAL_EMBEDDING_MODEL_DIR, LOCAL_EMBEDDING_MAX_LENGTH
     global LOCAL_USER_NAME
-    global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, ERNIE_API_KEY, ERNIE_BASE_URL
-    global INTERNAL_ERNIE_BASE_URL, INTERNAL_ERNIE_MODEL
     global SERPER_API_KEY, SECRET_KEY, CORS_ORIGINS
     global BAIDU_APP_KEY, BAIDU_SECRET_KEY, PADDLEOCR_API_URL, PADDLE_OCR_TOKEN
 
@@ -257,12 +189,6 @@ def reload_runtime_settings() -> dict:
     LOCAL_EMBEDDING_MAX_LENGTH = int(_read_env('LOCAL_EMBEDDING_MAX_LENGTH', '256'))
     LOCAL_USER_NAME = _read_env('LOCAL_USER_NAME', '本地用户')
 
-    DEEPSEEK_API_KEY = _read_env('DEEPSEEK_API_KEY')
-    DEEPSEEK_BASE_URL = _read_env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
-    ERNIE_API_KEY = _read_env('ERNIE_API_KEY')
-    ERNIE_BASE_URL = _read_env('ERNIE_BASE_URL', 'https://aistudio.baidu.com/llm/lmapi/v3')
-    INTERNAL_ERNIE_BASE_URL = _read_env('INTERNAL_ERNIE_BASE_URL')
-    INTERNAL_ERNIE_MODEL = _read_env('INTERNAL_ERNIE_MODEL', 'ERNIE-4.5-21B-A3B')
     SERPER_API_KEY = _read_env('SERPER_API_KEY')
     SECRET_KEY = _read_env('SECRET_KEY', 'proview-dev-secret')
     CORS_ORIGINS = _build_cors_origins()
@@ -275,4 +201,3 @@ def reload_runtime_settings() -> dict:
 
 
 reload_runtime_settings()
-

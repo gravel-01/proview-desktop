@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Cpu,
   FileCheck,
+  LayoutGrid,
   Layers3,
   Loader,
   Play,
@@ -22,7 +23,7 @@ import CustomSelect from '../components/CustomSelect.vue'
 import JobTagPicker from '../components/JobTagPicker.vue'
 import StageDeck from '../components/StageDeck.vue'
 import { fetchLatestResume, ttsPreview } from '../services/interview'
-import { primeVoicePlayback } from '../composables/useVoice'
+import { fetchModels, type RuntimeModelRecord } from '../services/models'
 import { isReusableOcrText } from '../utils/ocr'
 import { RESUME_UPLOAD_ACCEPT, RESUME_UPLOAD_HINT } from '../utils/resumeFile'
 
@@ -87,13 +88,6 @@ const speedOptions = [
   { label: '1.25x', spd: 7 },
   { label: '1.5x', spd: 9 },
   { label: '2x', spd: 12 },
-] as const
-
-const modelOptions = [
-  { value: 'deepseek', label: 'DeepSeek', desc: '深度求索，代码能力强', emoji: '🧠' },
-  { value: 'ernie', label: '文心一言', desc: '百度大模型，中文理解优秀', emoji: '🌐' },
-  { value: 'ernie-thinking', label: '文心（深度思考）', desc: '开启思维链，回复更慢但更深入', emoji: '🔮' },
-  { value: 'internal-ernie', label: '内测大模型（未开放）', desc: '仅本地内测地址配置后可用', emoji: '🔒' },
 ] as const
 
 const interviewPresets: ArrangementPreset[] = [
@@ -181,6 +175,8 @@ const PREVIEW_TEXT = '你好，我是你的AI面试官，准备好开始面试�
 
 const previewPlaying = ref(false)
 const previewLoading = ref(false)
+const modelsLoading = ref(false)
+const modelLoadError = ref('')
 const arrangementGridExpanded = ref(false)
 const arrangementPanelExpanded = ref(false)
 const launchConfigOpen = ref(false)
@@ -191,6 +187,7 @@ const resumeFileError = ref('')
 let launchTouchStartX: number | null = null
 let previewAudioCtx: AudioContext | null = null
 let previewSource: AudioBufferSourceNode | null = null
+const modelCatalog = ref<RuntimeModelRecord[]>([])
 
 const launchSteps = [
   {
@@ -222,8 +219,13 @@ const currentStyleOption = computed(() => (
   styleOptions.find(item => item.value === store.config.style) || styleOptions[0]
 ))
 
-const currentModelOption = computed(() => (
-  modelOptions.find(item => item.value === store.config.modelProvider) || modelOptions[0]
+const availableModels = computed(() => modelCatalog.value.filter(model => model.available))
+
+const selectedModelRecord = computed(() => (
+  availableModels.value.find(model => model.id === store.config.modelId)
+  || availableModels.value.find(model => model.is_default)
+  || availableModels.value[0]
+  || null
 ))
 
 const currentVoiceOption = computed(() => (
@@ -304,6 +306,7 @@ const arrangementDetailAnchorRef = ref<HTMLElement | null>(null)
 const arrangementDetailRef = ref<HTMLElement | null>(null)
 
 const hasResumeSelection = computed(() => !!store.config.resumeFile || !!store.config.resumeOcrText)
+const hasAvailableModels = computed(() => availableModels.value.length > 0)
 
 const shouldShowArrangementDetail = computed(() => (
   arrangementPanelExpanded.value
@@ -316,11 +319,48 @@ const resumeStatusLabel = computed(() => {
 })
 
 const confirmSummaryItems = computed(() => [
-  { label: '当前模型', value: currentModelOption.value.label },
+  { label: '当前模型', value: selectedModelRecord.value?.name || '未选择模型' },
   { label: '当前编排', value: `${currentTypeOption.value.label} / ${currentDifficultyOption.value.label} / ${currentStyleOption.value.label}` },
   { label: '岗位画像', value: store.config.jobTitle.trim() || '岗位待填写' },
   { label: '简历状态', value: resumeStatusLabel.value },
 ])
+const primaryStartButtonLabel = computed(() => {
+  if (loading.value) return '系统初始化中...'
+  if (modelsLoading.value) return '正在读取模型...'
+  if (!hasAvailableModels.value) return '先配置模型'
+  return '开始沉浸式面试'
+})
+
+function syncSelectedModel() {
+  const selected = selectedModelRecord.value
+  if (!selected) {
+    store.config.modelId = ''
+    return
+  }
+  if (store.config.modelId !== selected.id) {
+    store.config.modelId = selected.id
+  }
+}
+
+async function loadModels() {
+  modelsLoading.value = true
+  modelLoadError.value = ''
+  try {
+    const snapshot = await fetchModels()
+    modelCatalog.value = Array.isArray(snapshot.models) ? snapshot.models : []
+    syncSelectedModel()
+  } catch (error) {
+    modelCatalog.value = []
+    store.config.modelId = ''
+    modelLoadError.value = error instanceof Error ? error.message : '读取模型列表失败'
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+function goToModelSettings() {
+  router.push({ path: '/config', query: { panel: 'models' } })
+}
 
 function setStyle(value: string) {
   store.config.style = value as InterviewConfig['style']
@@ -364,6 +404,11 @@ function stopPreview() {
 }
 
 function validateLaunchProfile(showAlert = true) {
+  syncSelectedModel()
+  if (!hasAvailableModels.value) {
+    if (showAlert) alert('当前没有可用模型，请先前往应用设置完成模型配置。')
+    return false
+  }
   if (!store.config.jobTitle.trim()) {
     if (showAlert) alert('请输入目标岗位')
     return false
@@ -394,7 +439,11 @@ function prevLaunchStep() {
 }
 
 function openLaunchConfig() {
-  if (loading.value) return
+  if (loading.value || modelsLoading.value) return
+  if (!hasAvailableModels.value) {
+    goToModelSettings()
+    return
+  }
   launchStepIndex.value = 0
   launchConfigOpen.value = true
 }
@@ -472,11 +521,6 @@ async function startInterview() {
 
   stopPreview()
   try {
-    try {
-      await primeVoicePlayback()
-    } catch (error) {
-      console.warn('语音播放预激活失败，进入面试后仍可手动触发语音:', error)
-    }
     await store.startInterview()
     launchConfigOpen.value = false
     router.push('/interview')
@@ -520,6 +564,7 @@ function clearHistoryResume() {
 }
 
 onMounted(async () => {
+  await loadModels()
   if (store.config.resumeSelection === 'none') return
   if (store.config.resumeFile || store.config.resumeOcrText) return
 
@@ -562,6 +607,14 @@ onBeforeUnmount(() => {
           </div>
           <div class="setup-section__actions">
             <span class="setup-section__hint hidden md:inline-block">轮次、难度和面试风格共同决定提问节奏与压迫感。</span>
+            <button
+              type="button"
+              class="setup-section__toggle"
+              @click="arrangementGridExpanded = !arrangementGridExpanded"
+            >
+              <LayoutGrid class="h-3.5 w-3.5" />
+              <span>{{ arrangementGridExpanded ? '收起场景' : '展开全部场景' }}</span>
+            </button>
           </div>
         </div>
 
@@ -726,20 +779,43 @@ onBeforeUnmount(() => {
                 AI 大模型
               </h3>
             </div>
-            <div class="setup-model-pills">
+            <div v-if="hasAvailableModels" class="setup-model-pills">
               <button
-                v-for="option in modelOptions"
-                :key="option.value"
+                v-for="option in availableModels"
+                :key="option.id"
                 type="button"
                 class="setup-model-pill"
-                :class="store.config.modelProvider === option.value ? 'setup-model-pill--active' : 'setup-model-pill--idle'"
-                @click="store.config.modelProvider = option.value"
+                :class="store.config.modelId === option.id ? 'setup-model-pill--active' : 'setup-model-pill--idle'"
+                @click="store.config.modelId = option.id"
               >
                 <span class="setup-model-pill__dot"></span>
-                {{ option.label }}
+                {{ option.name }}
               </button>
             </div>
-            <p class="text-helper mt-4">{{ currentModelOption.desc }}</p>
+            <div v-else class="setup-model-blocker">
+              <p class="setup-model-blocker__title">当前没有可用模型</p>
+              <p class="text-helper mt-2">
+                先在应用设置的模型服务里新增模型，填入 Base URL / API Key，并启用一条模型。回到首页后就能继续开始面试。
+              </p>
+              <button type="button" class="setup-resume-state__action mt-4" @click="goToModelSettings">
+                前往模型配置
+              </button>
+            </div>
+            <p class="text-helper mt-4">
+              <template v-if="selectedModelRecord">
+                当前将使用 {{ selectedModelRecord.name }}（{{ selectedModelRecord.model }}）。
+                <span v-if="selectedModelRecord.is_default">这也是当前全局默认模型。</span>
+              </template>
+              <template v-else-if="modelsLoading">
+                正在读取模型中心配置...
+              </template>
+              <template v-else-if="modelLoadError">
+                {{ modelLoadError }}
+              </template>
+              <template v-else>
+                尚未读取到可用模型，请先完成模型配置。
+              </template>
+            </p>
           </article>
 
           <article class="setup-surface-card">
@@ -806,9 +882,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="setup-start-card__actions">
-            <button type="submit" class="ui-btn ui-btn-primary setup-start-card__btn" :disabled="loading">
+            <button type="submit" class="ui-btn ui-btn-primary setup-start-card__btn" :disabled="loading || modelsLoading">
               <Play class="h-5 w-5" />
-              <span>{{ loading ? '系统初始化中...' : '开始沉浸式面试' }}</span>
+              <span>{{ primaryStartButtonLabel }}</span>
             </button>
 
             <button
@@ -1050,10 +1126,10 @@ onBeforeUnmount(() => {
                 type="button"
                 class="ui-btn ui-btn-primary"
                 :disabled="loading || !isLaunchProfileReady"
-                @click="startInterview"
+                @click="hasAvailableModels ? startInterview() : goToModelSettings()"
               >
                 <Play class="h-5 w-5" />
-                <span>{{ loading ? '系统初始化中...' : '确认进入面试' }}</span>
+                <span>{{ loading ? '系统初始化中...' : (hasAvailableModels ? '确认进入面试' : '请先配置模型') }}</span>
               </button>
             </div>
           </div>
@@ -1634,6 +1710,20 @@ onBeforeUnmount(() => {
   border-color: rgba(129, 140, 248, 0.35);
   background: rgba(238, 242, 255, 0.92);
   box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.14);
+}
+
+.setup-model-blocker {
+  margin-top: 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  background: rgba(255, 251, 235, 0.92);
+  padding: 1rem;
+}
+
+.setup-model-blocker__title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #92400e;
 }
 
 .setup-resume-head {
@@ -2728,12 +2818,17 @@ onBeforeUnmount(() => {
 .dark .setup-scenario-card__state,
 .dark .setup-scenario-card__tag,
 .dark .setup-arrangement-panel__block,
+.dark .setup-model-blocker,
 .dark .setup-jd-shell,
 .dark .setup-training-option__card,
 .dark .setup-resume-state__action,
 .dark .setup-upload-trigger {
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.dark .setup-model-blocker__title {
+  color: #fcd34d;
 }
 
 .dark .setup-jd-shell {

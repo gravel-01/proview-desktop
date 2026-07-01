@@ -16,13 +16,23 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 import config as app_config
 from config import (
-    UPLOAD_FOLDER, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
-    SECRET_KEY, CORS_ORIGINS, BAIDU_APP_KEY, BAIDU_SECRET_KEY,
-    ERNIE_API_KEY, ERNIE_BASE_URL, INTERNAL_ERNIE_BASE_URL,
-    INTERNAL_ERNIE_MODEL, RAG_DB_PATH, PDF_OUTPUT_DIR
+    UPLOAD_FOLDER, SECRET_KEY, CORS_ORIGINS,
+    BAIDU_APP_KEY, BAIDU_SECRET_KEY, RAG_DB_PATH, PDF_OUTPUT_DIR
 )
 from auth import create_token, require_session, revoke_session
-from core.model_registry import init_providers, get_provider, get_default_provider, list_available_providers
+from core.model_registry import (
+    create_provider,
+    delete_provider,
+    get_provider,
+    get_default_provider,
+    init_providers,
+    list_available_providers,
+    list_models,
+    probe_model_connection,
+    resolve_model_selection,
+    set_default_provider,
+    update_provider,
+)
 from services.ocr_result_utils import normalize_reusable_ocr_result
 from services.resume_preview_service import get_resume_preview_summary
 from services.resume_text_extraction import (
@@ -37,8 +47,6 @@ from services.career_planning_llm import CareerPlanLLMGenerator
 from services.career_planning_docs import CareerPlanningDocumentRepository
 from services.interview_turn_service import InterviewTurnService
 from utils.safe_log import configure_stdio, safe_log
-from learning.routes import learning_bp, set_data_client_provider as set_learning_data_client_provider
-from monitoring.routes import monitoring_bp, set_data_client_provider
 
 configure_stdio()
 
@@ -58,36 +66,16 @@ app = Flask(__name__)
 app.secret_key = SECRET_KEY
 CORS(app, origins=CORS_ORIGINS, supports_credentials=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-set_data_client_provider(lambda: data_client if STORAGE_AVAILABLE else None)
-set_learning_data_client_provider(lambda: data_client if STORAGE_AVAILABLE else None)
-app.register_blueprint(monitoring_bp)
-app.register_blueprint(learning_bp)
 
 def _reload_runtime_config_state() -> dict:
-    global DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
-    global ERNIE_API_KEY, ERNIE_BASE_URL
-    global INTERNAL_ERNIE_BASE_URL, INTERNAL_ERNIE_MODEL
     global BAIDU_APP_KEY, BAIDU_SECRET_KEY
 
     snapshot = app_config.reload_runtime_settings()
 
-    DEEPSEEK_API_KEY = app_config.DEEPSEEK_API_KEY
-    DEEPSEEK_BASE_URL = app_config.DEEPSEEK_BASE_URL
-    ERNIE_API_KEY = app_config.ERNIE_API_KEY
-    ERNIE_BASE_URL = app_config.ERNIE_BASE_URL
-    INTERNAL_ERNIE_BASE_URL = app_config.INTERNAL_ERNIE_BASE_URL
-    INTERNAL_ERNIE_MODEL = app_config.INTERNAL_ERNIE_MODEL
     BAIDU_APP_KEY = app_config.BAIDU_APP_KEY
     BAIDU_SECRET_KEY = app_config.BAIDU_SECRET_KEY
 
-    init_providers(
-        deepseek_api_key=DEEPSEEK_API_KEY,
-        deepseek_base_url=DEEPSEEK_BASE_URL,
-        ernie_api_key=ERNIE_API_KEY,
-        ernie_base_url=ERNIE_BASE_URL,
-        internal_ernie_base_url=INTERNAL_ERNIE_BASE_URL,
-        internal_ernie_model=INTERNAL_ERNIE_MODEL,
-    )
+    init_providers()
     return snapshot
 
 
@@ -633,6 +621,20 @@ def _resolve_requested_model_provider(model_provider: str):
             return get_default_provider(), ""
         return None, _model_provider_unavailable_message(provider)
     return provider, ""
+
+
+def _get_global_default_model_or_response():
+    provider = get_default_provider()
+    if provider and provider.available:
+        return provider, None
+    return None, (
+        jsonify({
+            "status": "error",
+            "message": "当前没有可用的默认模型，请先在应用设置中完成模型配置。",
+        }),
+        503,
+    )
+
 
 # Per-session 评估观察者
 try:
@@ -2445,9 +2447,12 @@ def _try_generate_prompt(job_title, interview_type, difficulty, style, resume_su
     try:
         if _prompt_generator is None:
             from core.prompt_generator import PromptGenerator
+            provider, provider_error = _get_global_default_model_or_response()
+            if provider_error:
+                return ""
             _prompt_generator = PromptGenerator(
-                api_key=DEEPSEEK_API_KEY,
-                base_url=DEEPSEEK_BASE_URL
+                api_key=provider.api_key,
+                base_url=provider.base_url,
             )
         return _prompt_generator.generate(
             job_title=job_title,
@@ -3007,12 +3012,7 @@ def link_career_task_doc(task_id):
 
 @app.route('/api/career/tasks/<int:task_id>/docs', methods=['GET'])
 def list_career_task_docs(task_id):
-    """Return all doc sections linked to a task (by id, regardless of user).
-
-    The endpoint does not enforce ownership at this layer because the
-    underlying :func:`list_task_resource_refs` query is already
-    constrained to the user's plan via the :class:`MemoryBus` wrapper.
-    """
+    """Return doc sections linked to a task owned by the current user."""
     if not STORAGE_AVAILABLE or not data_client or not career_planning_service:
         return jsonify({"status": "error", "message": "职业规划服务暂不可用"}), 503
 
@@ -3021,7 +3021,7 @@ def list_career_task_docs(task_id):
         return jsonify({"status": "error", "message": "本机用户不可用"}), 401
 
     try:
-        refs = career_planning_service.list_task_resource_refs(int(task_id))
+        refs = career_planning_service.list_task_resource_refs(int(task_id), user_id=int(user_id))
         out = [
             {
                 "doc_id": r.get("doc_id"),
@@ -4995,7 +4995,14 @@ def parse_resume_for_builder():
                 "message": "简历内容提取失败或内容过少，请确保文件清晰可读"
             }), 400
 
-        analyzer = ResumeAnalyzer(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        provider, provider_error = _get_global_default_model_or_response()
+        if provider_error:
+            return provider_error
+        analyzer = ResumeAnalyzer(
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            model=provider.model,
+        )
         builder_data = analyzer._extract_builder_data(resume_text)
         return jsonify({
             "status": "success",
@@ -5292,10 +5299,13 @@ def polish_resume_builder():
 
     try:
         # 初始化分析器
+        provider, provider_error = _get_global_default_model_or_response()
+        if provider_error:
+            return provider_error
         analyzer = ResumeAnalyzer(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_BASE_URL,
-            model="deepseek-chat"
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            model=provider.model,
         )
 
         # 将模块转换为文本格式供 LLM 分析

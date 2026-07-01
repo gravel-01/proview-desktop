@@ -73,6 +73,50 @@ $env:PROVIEW_DESKTOP_PYTHON = "D:\path\to\python.exe"
 $env:PROVIEW_API_PORT = "18765"
 ```
 
+## 本地运行时数据、备份与升级
+
+桌面版的用户数据不放在安装目录里，而是放在 Electron 的用户数据目录下：
+
+```text
+<Electron userData>\backend-data
+```
+
+Windows 常见位置类似：
+
+```text
+%APPDATA%\ProView AI Interviewer\backend-data
+```
+
+实际路径以运行时配置页显示的 `.env` 和 `models.json` 路径为准。Electron 会把这个目录注入给后端：
+
+- `PROVIEW_APP_DATA_DIR=<Electron userData>\backend-data`
+- `PROVIEW_ENV_FILE=<Electron userData>\backend-data\.env`
+- `PROVIEW_SQLITE_DB_PATH=data/interviews.db`
+- `PROVIEW_CAREER_DB_PATH=data/career_planning.sqlite3`
+- `PROVIEW_SESSION_TOKEN_DB_PATH=data/session_tokens.sqlite3`
+
+建议备份整个 `backend-data` 目录。最小备份边界如下：
+
+- `backend-data/.env`：固定运行时配置，例如 OCR、语音、端口和数据库路径。这里可能包含 OCR Token、百度语音密钥等敏感信息。
+- `backend-data/models.json`：模型中心主存储，包含模型名称、Base URL、默认模型、旧配置导入摘要和模型 API Key。
+- `backend-data/data/interviews.db`：面试历史、会话数据和主要本地业务数据。
+- `backend-data/data/career_planning.sqlite3`：职业规划、任务和进度数据。当前桌面脚本会把它作为独立 SQLite 文件注入。
+- `backend-data/data/session_tokens.sqlite3`：本机会话 token。备份它可以保留部分本地认证映射；如果你想让升级后重新建立会话，可以不恢复这个文件。
+
+恢复或迁移到新机器时：
+
+1. 先完全退出 ProView 桌面版。
+2. 安装或解压新版本。
+3. 将旧 `backend-data` 内容复制到新机器对应的 `<Electron userData>\backend-data`。
+4. 启动应用，在运行时配置页确认 `.env`、`models.json` 和模型列表路径正常。
+
+升级注意事项：
+
+- 安装包升级不应该覆盖 `backend-data`，但升级前仍建议备份整个目录。
+- 首次启动新版本时，SQLite schema 可能会自动迁移；迁移前保留一份冷备份更稳。
+- 不承诺恢复正在进行中的 active session。升级或替换文件前，先结束当前面试、简历分析或职业规划操作。
+- `models.json` 和 `.env` 当前仍是本机明文存储。不要提交、截图、发送或共享这些文件；生产使用时建议依赖系统账户权限、磁盘加密和后续密钥链 / 加密存储专项。
+
 ## 启动步骤
 
 ### 1. 构建桌面要用的前端资源

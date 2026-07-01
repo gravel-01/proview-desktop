@@ -410,9 +410,21 @@ class TaskResourceRefStore:
                 (int(task_id), str(doc_id), int(section_idx), str(reason or ""), _utc_now()),
             )
 
-    def list_for_task(self, task_id: int) -> List[Dict[str, Any]]:
+    def list_for_task(self, task_id: int, user_id: Any = None) -> List[Dict[str, Any]]:
         with self._service._managed_connection() as conn:  # type: ignore[attr-defined]
             self._create_table(conn)
+            if user_id is not None:
+                rows = conn.execute(
+                    """
+                    SELECT r.* FROM career_task_resource_refs r
+                    JOIN career_tasks t ON t.id = r.task_id
+                    JOIN career_plans p ON p.id = t.plan_id
+                    WHERE r.task_id = ? AND p.user_id = ?
+                    ORDER BY r.created_at ASC
+                    """,
+                    (int(task_id), str(user_id)),
+                ).fetchall()
+                return [dict(r) for r in rows]
             rows = conn.execute(
                 "SELECT * FROM career_task_resource_refs WHERE task_id = ? ORDER BY created_at ASC",
                 (int(task_id),),

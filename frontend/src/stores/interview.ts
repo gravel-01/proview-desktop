@@ -109,7 +109,7 @@ export const useInterviewStore = defineStore('interview', () => {
     resumeSelection: 'auto-latest',
     voicePer: 4100,
     voiceSpd: 5,
-    modelProvider: 'ernie'
+    modelId: ''
   })
 
   let msgIdCounter = 0
@@ -617,6 +617,13 @@ export const useInterviewStore = defineStore('interview', () => {
       difficulty: meta.diff || config.value.difficulty,
       featureVad: meta.vad ?? config.value.featureVad,
       featureDeep: meta.deep ?? config.value.featureDeep,
+      modelId: (
+        (meta.model_snapshot && typeof meta.model_snapshot === 'object' && typeof meta.model_snapshot.model_id === 'string'
+          ? meta.model_snapshot.model_id
+          : '')
+        || (typeof meta.selected_model_id === 'string' ? meta.selected_model_id : '')
+        || config.value.modelId
+      ),
       resumeFile: null,
       resumeOcrText: ocrText || undefined,
       resumeFileName: fileName || undefined,

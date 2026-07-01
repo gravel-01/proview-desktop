@@ -15,7 +15,7 @@ export interface InterviewConfig {
   resumeSourceSessionId?: string
   voicePer: number
   voiceSpd: number
-  modelProvider: string
+  modelId: string
 }
 
 export interface ChatMessage {
@@ -76,8 +76,11 @@ export interface DebugInfo {
     }>
   }
   model_provider?: string
+  selected_model_id?: string
+  requested_model_id?: string
   model_name?: string
   model_label?: string
+  model_route?: string
   data_service?: {
     connected: boolean
     url: string | null

@@ -45,3 +45,10 @@ def get_env_file_path() -> Path:
     if override:
         return Path(override)
     return get_resource_path(".env")
+
+
+def get_models_file_path() -> Path:
+    override = (os.getenv("PROVIEW_MODELS_FILE") or "").strip()
+    if override:
+        return Path(override)
+    return get_app_data_path("models.json")

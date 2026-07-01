@@ -54,16 +54,21 @@ $env:PROVIEW_PLAYWRIGHT_CHANNEL = "msedge"
 
 Web 本地开发默认使用：
 
-- 配置文件：`backend/.env`
+- 固定运行时配置：`backend/.env`
+- 模型主存储：`backend/models.json`
 - 示例配置：`backend/.env.example`
 
 常见必填项按功能分组：
 
-- 大模型：`DEEPSEEK_API_KEY` / `ERNIE_API_KEY`
+- 大模型：启动后打开 `http://localhost:5173/app.html#/config`，在模型配置中新增 OpenAI 兼容模型并设置默认模型
 - OCR：`PADDLEOCR_API_URL` / `PADDLE_OCR_TOKEN`
 - 语音：`BAIDU_APP_KEY` / `BAIDU_SECRET_KEY`
 
 不配置时，相关功能会不可用，但项目本身仍可启动。
+
+`DEEPSEEK_* / ERNIE_*` 只作为旧 `.env` 的一次性导入来源：当 `models.json` 不存在时，后端会尝试导入这些字段生成初始模型；一旦 `models.json` 存在，模型中心就是主配置来源。
+
+Langfuse / monitoring 不再是正式版用户依赖，Web 开发模式也不需要配置 `LANGFUSE_*`。
 
 ## 启动步骤
 

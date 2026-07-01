@@ -244,25 +244,19 @@ function markSectionCompleted(docId: string, sectionIdx: number, taskId?: number
   })
 }
 
-// 阅读进度（localStorage：兜底；后端：权威）
+// 阅读进度（localStorage：兜底；后端 completed 只由显式标记触发）
 function updateProgress(docId: string, progress: number) {
   readProgress.value[docId] = progress
   readHistory.value[docId] = new Date().toISOString()
   localStorage.setItem('career_doc_progress', JSON.stringify(readProgress.value))
   localStorage.setItem('career_doc_history', JSON.stringify(readHistory.value))
-  // 同步上报到后端（不阻塞 UI）
-  reportReadEvent({
-    doc_id: docId,
-    section_idx: activeSectionIdx.value,
-    read_seconds: 0,
-    completed: progress >= 100,
-  })
 }
 
 watch(activeDocument, (document) => {
   if (!document) return
-  const currentProgress = readProgress.value[document.id] || 0
-  updateProgress(document.id, Math.max(currentProgress, 100))
+  if (typeof readProgress.value[document.id] !== 'number') {
+    updateProgress(document.id, 0)
+  }
 }, { immediate: true })
 
 // 分享功能
